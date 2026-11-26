@@ -45,6 +45,18 @@ $taskGateway = switch ($Mode) { 'solo' { 18100 } 'host' { 19100 } 'steam' { 2010
 $taskLogPort = switch ($Mode) { 'solo' { 18200 } 'host' { 19200 } 'steam' { 20200 } }
 $taskAdminPort = switch ($Mode) { 'solo' { 18300 } 'host' { 19300 } 'steam' { 20300 } }
 
+function Read-StateFile([string]$File) {
+    $taskText = [IO.File]::ReadAllText($File)
+    $taskRead = $taskText | ConvertFrom-Json -ErrorAction Stop
+    if ($taskRead -isnot [pscustomobject]) { throw 'World state must be a JSON object.' }
+    return $taskRead
+}
+function Preserve-CorruptState([string]$File) {
+    [IO.Directory]::CreateDirectory((Split-Path -Parent $File)) | Out-Null
+    $taskEvidence = "$File.corrupt-$([DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fff'))-$([Guid]::NewGuid().ToString('N')).json"
+    [IO.File]::Move($File,$taskEvidence)
+    return $taskEvidence
+}
 function Read-State {
     # Each mode keeps its own record so starting the Steam world never hides the
     # national world's processes. Fall back to the old shared file once.
@@ -53,9 +65,24 @@ function Read-State {
         $taskFile = $taskLegacyStateFile
     }
     if (Test-Path -LiteralPath $taskFile) {
-        $taskRead=Get-Content -LiteralPath $taskFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        try { $taskRead = Read-StateFile $taskFile }
+        catch {
+            $taskCorrupt = Preserve-CorruptState $taskFile
+            $taskBackup = "$taskFile.bak"
+            if (-not (Test-Path -LiteralPath $taskBackup)) { throw "World state is corrupt and no backup exists. Evidence: $taskCorrupt" }
+            try { $taskRead = Read-StateFile $taskBackup }
+            catch { throw "World state and backup are corrupt. Evidence: $taskCorrupt" }
+            # The corrupt primary was retained under a unique name. Re-publish
+            # the known-good backup atomically without overwriting that backup.
+            Save-State $taskRead
+        }
+        if ($taskFile -eq $taskStateFile -and -not $taskRead.PSObject.Properties['Mode']) { throw 'This mode state file has no Mode identity.' }
         if (-not $taskRead.PSObject.Properties['Gateway']) { $taskRead | Add-Member -NotePropertyName Gateway -NotePropertyValue $null }
+        if (-not $taskRead.PSObject.Properties['Python']) { $taskRead | Add-Member -NotePropertyName Python -NotePropertyValue '' }
+        if (-not $taskRead.PSObject.Properties['Server']) { $taskRead | Add-Member -NotePropertyName Server -NotePropertyValue $null }
+        if (-not $taskRead.PSObject.Properties['Proxy']) { $taskRead | Add-Member -NotePropertyName Proxy -NotePropertyValue $null }
         if (-not $taskRead.PSObject.Properties['Mode']) { $taskRead | Add-Member -NotePropertyName Mode -NotePropertyValue 'solo' }
+        if ($taskFile -eq $taskStateFile -and $taskRead.Mode -ne $Mode) { throw 'This state file belongs to another mode; it was not adopted.' }
         # A legacy state belonging to another mode must never be adopted or stopped.
         if ($taskRead.Mode -ne $Mode) { return $null }
         return $taskRead
@@ -63,14 +90,34 @@ function Read-State {
     return $null
 }
 function Save-State($State) {
-    $taskJson = $State | ConvertTo-Json -Depth 8
+    $taskJson = $State | ConvertTo-Json -Depth 12
     [IO.Directory]::CreateDirectory((Split-Path -Parent $taskStateFile)) | Out-Null
-    [IO.File]::WriteAllText($taskStateFile, $taskJson, [Text.UTF8Encoding]::new($false))
+    $taskTemporary = "$taskStateFile.$([Guid]::NewGuid().ToString('N')).tmp"
+    $taskBackup = "$taskStateFile.bak"
+    try {
+        [IO.File]::WriteAllText($taskTemporary, $taskJson, [Text.UTF8Encoding]::new($false))
+        if (Test-Path -LiteralPath $taskStateFile) {
+            [IO.File]::Replace($taskTemporary, $taskStateFile, $taskBackup)
+        } else {
+            [IO.File]::Move($taskTemporary, $taskStateFile)
+        }
+    } finally {
+        if (Test-Path -LiteralPath $taskTemporary) { [IO.File]::Delete($taskTemporary) }
+    }
 }
 function Test-Port([string]$Address, [int]$Port) {
     $taskSocket = [Net.Sockets.TcpClient]::new()
     try { $taskConnect=$taskSocket.ConnectAsync($Address,$Port); return $taskConnect.Wait(800) -and $taskSocket.Connected }
     catch { return $false } finally { $taskSocket.Dispose() }
+}
+function Test-PortOwner([string]$Address,[int]$Port,$Record) {
+    if (-not (Process-Matches $Record)) { return $false }
+    try { $taskListeners=@(Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction Stop) }
+    catch { return $false }
+    foreach ($taskListener in $taskListeners) {
+        if ($taskListener.OwningProcess -eq $Record.Id) { return $true }
+    }
+    return $false
 }
 function Test-FirewallRules([string[]]$Names) {
     # Get-NetFirewallRule costs about a second per call, which stalls every status
@@ -95,10 +142,13 @@ function Test-Ports([object[]]$Targets, [int]$TimeoutMilliseconds = 250) {
         try { $tasks += ,$socket.ConnectAsync([string]$target[0], [int]$target[1]) }
         catch { $tasks += ,$null }
     }
-    $waits = @()
-    foreach ($task in $tasks) { if ($null -ne $task) { $waits += $task.AsyncWaitHandle } }
-    if ($waits.Count -gt 0) {
-        [Threading.WaitHandle]::WaitAny([Threading.WaitHandle[]]$waits, $TimeoutMilliseconds) | Out-Null
+    # WaitHandle.WaitAll is rejected on PowerShell's STA thread. Wait each
+    # handle against a shared deadline so closed ports still share one timeout.
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    foreach ($task in $tasks) {
+        if ($null -eq $task) { continue }
+        $remaining = [int][Math]::Max(0, ($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+        try { $task.AsyncWaitHandle.WaitOne($remaining) | Out-Null } catch { }
     }
     $results = @()
     for ($i = 0; $i -lt $sockets.Count; $i++) {
@@ -107,17 +157,92 @@ function Test-Ports([object[]]$Targets, [int]$TimeoutMilliseconds = 250) {
     foreach ($socket in $sockets) { try { $socket.Dispose() } catch { } }
     return $results
 }
-function Process-Matches($Record) {
-    if (-not $Record) { return $false }
-    $taskProcess = Get-Process -Id $Record.Id -ErrorAction SilentlyContinue
-    return $taskProcess -and $taskProcess.Path -eq $Record.Path -and $taskProcess.StartTime.ToUniversalTime().ToString('o') -eq $Record.Started
+function Test-OwnedRecord($Record) {
+    if (-not $Record -or $Record.Owned -ne $true) { return $false }
+    if ($Record.Id -isnot [int] -and $Record.Id -isnot [long]) { return $false }
+    if ([int]$Record.Id -le 0 -or [string]::IsNullOrWhiteSpace([string]$Record.Path)) { return $false }
+    if ([string]::IsNullOrWhiteSpace([string]$Record.Started)) { return $false }
+    try { $null=[DateTimeOffset]::Parse([string]$Record.Started) } catch { return $false }
+    return $true
 }
-function Stop-Recorded($Record) {
-    if (Process-Matches $Record) {
-        $taskProcess=Get-Process -Id $Record.Id -ErrorAction Stop
-        Stop-Process -Id $taskProcess.Id -ErrorAction Stop
-        if (-not $taskProcess.WaitForExit(5000)) { throw 'Timed out stopping this profile process.' }
+function Process-Matches($Record,[string]$ExpectedPath) {
+    if (-not (Test-OwnedRecord $Record)) { return $false }
+    if ($ExpectedPath -and -not [string]::Equals([string]$Record.Path,$ExpectedPath,[StringComparison]::OrdinalIgnoreCase)) { return $false }
+    try {
+        $taskProcess = Get-Process -Id $Record.Id -ErrorAction Stop
+        # Python emits microsecond ISO timestamps while .NET renders 100ns ticks.
+        # Compare parsed tick values instead of strings with different precision.
+        $taskExpected=[DateTimeOffset]::Parse([string]$Record.Started).UtcDateTime.Ticks
+        $taskActual=$taskProcess.StartTime.ToUniversalTime().Ticks
+        return $taskProcess.Path -and [string]::Equals($taskProcess.Path,[string]$Record.Path,[StringComparison]::OrdinalIgnoreCase) -and ([Math]::Abs([double]($taskExpected-$taskActual)) -le 10)
+    } catch { return $false }
+}
+function Stop-Descendants($RootRecord,[string]$ExpectedPath) {
+    $taskAll=@(Get-CimInstance Win32_Process -ErrorAction Stop)
+    $taskById=@{}
+    foreach ($taskItem in $taskAll) { $taskById[[int]$taskItem.ProcessId]=$taskItem }
+    if (-not $taskById.ContainsKey([int]$RootRecord.Id)) { throw 'The owned root process disappeared during process-tree cleanup.' }
+    $taskRecords=@($RootRecord)
+    $taskDepths=@{([int]$RootRecord.Id)=0}
+    $taskQueue=[Collections.Generic.Queue[int]]::new()
+    $taskQueue.Enqueue([int]$RootRecord.Id)
+    while ($taskQueue.Count -gt 0) {
+        $taskParent=$taskQueue.Dequeue()
+        if ($taskDepths[$taskParent] -ge 64) { throw 'Owned process tree is unexpectedly deep.' }
+        foreach ($taskItem in $taskAll) {
+            if ([int]$taskItem.ParentProcessId -ne $taskParent) { continue }
+            $taskId=[int]$taskItem.ProcessId
+            if ($taskDepths.ContainsKey($taskId)) { continue }
+            try { $taskProcess=Get-Process -Id $taskId -ErrorAction Stop } catch { continue }
+            if (-not $taskProcess.Path) { throw "Could not verify child process $taskId executable path." }
+            $taskChild=[pscustomobject]@{
+                Id=$taskId; Path=$taskProcess.Path; Started=$taskProcess.StartTime.ToUniversalTime().ToString('o'); Owned=$true
+            }
+            # Confirm both PID+path+start time and a live, verified ancestry chain.
+            if (-not (Process-Matches $taskChild)) { throw "Child process $taskId identity changed during cleanup." }
+            for ($taskAncestor=$taskParent;$taskAncestor -ne $RootRecord.Id;$taskAncestor=[int]$taskById[$taskAncestor].ParentProcessId) {
+                if (-not $taskById.ContainsKey($taskAncestor) -or -not (Process-Matches $taskRecords[$taskDepths[$taskAncestor]])) {
+                    throw "Child process $taskId no longer has a verified owned ancestry chain."
+                }
+            }
+            $taskDepths[$taskId]=$taskDepths[$taskParent]+1
+            $taskRecords+=,$taskChild
+            $taskQueue.Enqueue($taskId)
+        }
     }
+    $taskChildren=@($taskRecords | Where-Object { $_.Id -ne $RootRecord.Id } | Sort-Object -Property @{Expression={$taskDepths[[int]$_.Id]};Descending=$true})
+    foreach ($taskChild in $taskChildren) {
+        if (-not (Process-Matches $RootRecord $ExpectedPath)) { throw 'The owned root exited during process-tree cleanup.' }
+        if (-not (Process-Matches $taskChild)) { continue }
+        $taskProcess=Get-Process -Id $taskChild.Id -ErrorAction Stop
+        Stop-Process -Id $taskProcess.Id -Force -ErrorAction Stop
+        if (-not $taskProcess.WaitForExit(5000)) { throw "Timed out stopping child process $($taskChild.Id)." }
+    }
+}
+function Stop-Recorded($Record,[string]$ExpectedPath) {
+    if (-not $Record) { return }
+    if (-not (Test-OwnedRecord $Record)) { throw 'Refusing to stop an incomplete or unowned process record.' }
+    # A stale record or a PID recycled by a user process is a safe no-op.
+    if (-not (Process-Matches $Record $ExpectedPath)) { return }
+    # Re-enumerate immediately before stopping the root to catch children spawned
+    # while an earlier descendant snapshot was being terminated.
+    for ($taskPass=0;$taskPass -lt 4;$taskPass++) {
+        Stop-Descendants $Record $ExpectedPath
+        $taskRemaining=@(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { [int]$_.ParentProcessId -eq [int]$Record.Id })
+        if ($taskRemaining.Count -eq 0) { break }
+    }
+    if (-not (Process-Matches $Record $ExpectedPath)) { return }
+    $taskProcess=Get-Process -Id $Record.Id -ErrorAction Stop
+    Stop-Process -Id $taskProcess.Id -Force -ErrorAction Stop
+    if (-not $taskProcess.WaitForExit(5000)) { throw 'Timed out stopping this profile process.' }
+}
+function Write-LifecycleEvidence($Operation,$Error,$State) {
+    try {
+        [IO.Directory]::CreateDirectory((Join-Path $PSScriptRoot 'runtime')) | Out-Null
+        $taskPath=Join-Path $PSScriptRoot "runtime\lifecycle-error-$Mode-$([DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fff'))-$([Guid]::NewGuid().ToString('N')).json"
+        $taskValue=@{ Operation=$Operation; Mode=$Mode; Error=[string]$Error; Created=[DateTime]::UtcNow.ToString('o'); State=$State } | ConvertTo-Json -Depth 12
+        [IO.File]::WriteAllText($taskPath,$taskValue,[Text.UTF8Encoding]::new($false))
+    } catch { }
 }
 function Notify-Proxy {
     if (-not ('WorldWinInet' -as [type])) {
@@ -142,11 +267,31 @@ function Restore-Route($State) {
 }
 function Stop-World($State) {
     if (-not $State) { return }
-    Restore-Route $State
-    Stop-Recorded $State.Proxy
-    Stop-Recorded $State.Gateway
-    Stop-Recorded $State.Server
-    $State.Active=$false; Save-State $State
+    $taskErrors=@()
+    try { Restore-Route $State } catch { $taskErrors+="routing: $($_.Exception.Message)" }
+    $taskGatewayPath=if ($State.Python) { [string]$State.Python } else { $taskPython }
+    foreach ($taskRole in @('Proxy','Gateway','Server')) {
+        $taskRecord=$State.$taskRole
+        if (-not $taskRecord) { continue }
+        $taskExpected=if ($taskRole -eq 'Server') { $taskExecutable } else { $taskGatewayPath }
+        if ($taskRole -ne 'Server' -and -not $taskExpected) {
+            $taskErrors+="$taskRole record has no verified Python executable path."
+            continue
+        }
+        try { Stop-Recorded $taskRecord $taskExpected } catch { $taskErrors+="${taskRole}: $($_.Exception.Message)" }
+    }
+    if ($taskErrors.Count -gt 0) {
+        $State.Active=$true
+        $State.LastError=($taskErrors -join '; ')
+        try { Save-State $State } catch { $taskErrors+="state: $($_.Exception.Message)" }
+        Write-LifecycleEvidence 'Stop' ($taskErrors -join '; ') $State
+        throw ('Could not stop every owned process safely: '+($taskErrors -join '; '))
+    }
+    $State.Active=$false
+    $State | Add-Member -NotePropertyName LastStopped -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force
+    Save-State $State
+    Remove-LaunchRecord 'Server'
+    Remove-LaunchRecord 'Gateway'
 }
 function Python-Json([string[]]$Arguments) {
     $taskOutput = & $taskPython -X utf8 (Join-Path $PSScriptRoot 'profile_manager.py') @Arguments
@@ -156,40 +301,67 @@ function Python-Json([string[]]$Arguments) {
 function Start-Background([string]$Executable,[string]$Directory,[string]$Name,[string[]]$Arguments,[string[]]$Environment=@()) {
     $taskStamp=Get-Date -Format 'yyyyMMdd-HHmmss-fff'
     $taskLogDirectory=Join-Path $taskProfile 'logs'
+    $taskPidPath=Join-Path $PSScriptRoot "runtime\owned-$Mode-$Name.json"
     $taskArgs=@('-X','utf8',(Join-Path $PSScriptRoot 'service_runner.py'),'--executable',$Executable,'--cwd',$Directory,
-        '--stdout',(Join-Path $taskLogDirectory "$Name-$taskStamp.log"),'--stderr',(Join-Path $taskLogDirectory "$Name-$taskStamp.err.log"))
+        '--stdout',(Join-Path $taskLogDirectory "$Name-$taskStamp.log"),'--stderr',(Join-Path $taskLogDirectory "$Name-$taskStamp.err.log"),'--pid-path',$taskPidPath)
     foreach ($taskEnv in $Environment) { $taskArgs+=@('--env',$taskEnv) }
     $taskArgs+=@('--')+$Arguments
     $taskOutput=& $taskPython @taskArgs
-    if ($LASTEXITCODE -ne 0) { throw 'Could not start this profile service.' }
-    $taskPid=($taskOutput | ConvertFrom-Json).pid
-    $taskProcess=Get-Process -Id $taskPid -ErrorAction Stop
-    return [pscustomobject]@{ Id=$taskPid; Path=$Executable; Started=$taskProcess.StartTime.ToUniversalTime().ToString('o'); Owned=$true }
+    if ($LASTEXITCODE -ne 0) {
+        if (Test-Path -LiteralPath $taskPidPath) {
+            $taskRecord=Read-LaunchRecord $taskPidPath
+            Stop-Recorded $taskRecord $Executable
+            [IO.File]::Delete($taskPidPath)
+        }
+        throw 'Could not start this profile service.'
+    }
+    try { $taskData=($taskOutput | Out-String | ConvertFrom-Json -ErrorAction Stop) } catch { throw 'Service launcher returned an invalid identity record.' }
+    if ($taskData.error) { throw [string]$taskData.error }
+    if ([string]::IsNullOrWhiteSpace([string]$taskData.path) -or [string]::IsNullOrWhiteSpace([string]$taskData.Started)) { throw 'Service launcher returned an incomplete identity record.' }
+    if (-not [string]::Equals([string]$taskData.path,$Executable,[StringComparison]::OrdinalIgnoreCase)) { throw 'Service launcher returned the wrong executable path.' }
+    # Use the identity produced by the launcher. Re-querying by PID here races
+    # with an immediate child crash and can lose the only cleanup record.
+    return [pscustomobject]@{ Id=[int]$taskData.pid; Path=[string]$taskData.path; Started=[string]$taskData.Started; Owned=$true }
 }
-function Wait-Ready([string]$Address,[int]$Port,$Record) {
-    for ($taskAttempt=0;$taskAttempt -lt 40;$taskAttempt++) {
+function Wait-Ready([string]$Address,[int]$Port,$Record,[int]$Attempts=80) {
+    for ($taskAttempt=0;$taskAttempt -lt $Attempts;$taskAttempt++) {
         if (-not (Process-Matches $Record)) { throw 'Profile service exited. See this profile logs.' }
-        if (Test-Port $Address $Port) { return }
+        # Connecting is not enough: a process that raced us for the port must not
+        # be mistaken for the service this task just started.
+        if ((Test-Port $Address $Port) -and (Test-PortOwner $Address $Port $Record)) { return }
         Start-Sleep -Milliseconds 250
     }
-    throw "Profile port $Port did not become ready."
+    throw "Profile port $Port did not become ready or is owned by another process."
 }
 function Client-Running {
     return @(Get-Process -Name 'launcher' -ErrorAction SilentlyContinue | Where-Object { $_.Path -and [string]::Equals($_.Path,$taskClient,[StringComparison]::OrdinalIgnoreCase) }).Count -gt 0
 }
 function Stop-Orphans {
-    # Helper processes this build spawns outlive their parent if the launcher is
-    # closed while elevated. They are identified by their own command lines so an
-    # unrelated PktMon session or someone else's python is never touched.
+    # Helper ownership requires the exact repository command line plus a live
+    # PID+path+start-time record. Command-line-only termination is not allowed.
     $stopped = @()
+    $taskErrors=@()
+    $taskPktMon=Join-Path $env:SystemRoot 'System32\PktMon.exe'
     $candidates = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
         $command = $_.CommandLine
         if ([string]::IsNullOrWhiteSpace($command)) { return $false }
-        ($_.Name -eq 'python.exe' -and $command -like "*$PSScriptRoot*capture_checklist.py*" -and $command -like '* watch *') -or
+        ($_.Name -eq 'python.exe' -and $taskPython -and $command -like "*$PSScriptRoot*capture_checklist.py*" -and $command -like '* watch *') -or
         ($_.Name -eq 'PktMon.exe' -and $command -like '*live-progress*snapshot*')
     })
     foreach ($candidate in $candidates) {
-        try { Stop-Process -Id $candidate.ProcessId -Force -ErrorAction Stop; $stopped += $candidate.ProcessId } catch { }
+        $taskExpected=if ($candidate.Name -eq 'python.exe') { $taskPython } else { $taskPktMon }
+        try {
+            $taskProcess=Get-Process -Id $candidate.ProcessId -ErrorAction Stop
+            $taskRecord=[pscustomobject]@{
+                Id=[int]$candidate.ProcessId; Path=$taskProcess.Path; Started=$taskProcess.StartTime.ToUniversalTime().ToString('o'); Owned=$true
+            }
+            Stop-Recorded $taskRecord $taskExpected
+            $stopped += $candidate.ProcessId
+        } catch { $taskErrors+="helper $($candidate.ProcessId): $($_.Exception.Message)" }
+    }
+    if ($taskErrors.Count -gt 0) {
+        Write-LifecycleEvidence 'Cleanup' ($taskErrors -join '; ') $null
+        throw ('Could not safely stop leftover helpers: '+($taskErrors -join '; '))
     }
     return $stopped
 }
@@ -201,11 +373,7 @@ function Stop-Cleanup($State) {
             Write-Output 'Game still running; kept this profile services.'
             return
         }
-        Stop-Recorded $State.Proxy
-        Stop-Recorded $State.Gateway
-        Stop-Recorded $State.Server
-        $State.Active = $false
-        Save-State $State
+        Stop-World $State
         Write-Output 'Stopped the services started by this launcher.'
     } else {
         Write-Output 'No services started by this launcher.'
@@ -213,8 +381,53 @@ function Stop-Cleanup($State) {
     $orphans = @(Stop-Orphans)
     if ($orphans.Count -gt 0) { Write-Output ("Reaped {0} leftover helper process(es)." -f $orphans.Count) }
 }
+function Read-LaunchRecord([string]$Path) {
+    try {
+        $taskRecord=[IO.File]::ReadAllText($Path) | ConvertFrom-Json -ErrorAction Stop
+        if ($taskRecord -isnot [pscustomobject]) { throw 'Launch record must be a JSON object.' }
+        $taskRecord | Add-Member -NotePropertyName Owned -NotePropertyValue $true -Force
+        if (-not (Test-OwnedRecord $taskRecord)) { throw 'Launch record has no complete PID, path and start time.' }
+        return $taskRecord
+    } catch {
+        $taskEvidence=Preserve-CorruptState $Path
+        throw "Launch record is corrupt and was not trusted: $($_.Exception.Message). Evidence: $taskEvidence"
+    }
+}
+function Remove-LaunchRecord([string]$Role) {
+    foreach ($taskName in @($Role, $(if ($Role -eq 'Gateway') { 'rooms' } else { $Role }))) {
+        $taskPath=Join-Path $PSScriptRoot "runtime\owned-$Mode-$taskName.json"
+        if (Test-Path -LiteralPath $taskPath) { [IO.File]::Delete($taskPath) }
+    }
+}
+function Recover-LaunchRecords($State) {
+    # A controller crash can happen after spawn but before Save-State. The
+    # launcher writes this identity first, so Start/Stop can recover that process
+    # without ever falling back to a name-only or PID-only kill.
+    $taskDirectory=Join-Path $PSScriptRoot 'runtime'
+    if (-not (Test-Path -LiteralPath $taskDirectory)) { return }
+    foreach ($taskFile in @(Get-ChildItem -LiteralPath $taskDirectory -Filter "owned-$Mode-*.json" -File -ErrorAction Stop)) {
+        if ($taskFile.Name -notmatch "^owned-$([Regex]::Escape($Mode))-(server|gateway|rooms)\.json$") {
+            throw "Unrecognized owned-process record: $($taskFile.FullName)"
+        }
+        $taskRole=$Matches[1]
+        $taskRecord=Read-LaunchRecord $taskFile.FullName
+        $taskExpected=if ($taskRole -eq 'server') { $taskExecutable } else { $(if ($State -and $State.Python) { [string]$State.Python } else { $taskPython }) }
+        if (-not $taskExpected) { throw "The $taskRole launch record has no verified executable path." }
+        $taskCurrent=if ($State) { if ($taskRole -eq 'rooms') { $State.Gateway } else { $State.$taskRole } } else { $null }
+        $taskSameTime=$false
+        if ($taskCurrent) {
+            try {
+                $taskSameTime=[Math]::Abs([DateTimeOffset]::Parse([string]$taskCurrent.Started).UtcDateTime.Ticks - [DateTimeOffset]::Parse([string]$taskRecord.Started).UtcDateTime.Ticks) -le 10
+            } catch { $taskSameTime=$false }
+        }
+        if ($taskCurrent -and $taskCurrent.Id -eq $taskRecord.Id -and $taskCurrent.Path -eq $taskRecord.Path -and $taskSameTime) { continue }
+        Stop-Recorded $taskRecord $taskExpected
+        [IO.File]::Delete($taskFile.FullName)
+    }
+}
 function Invoke-World {
     $taskState=Read-State
+    $script:taskLastState=$taskState
     if ($Action -eq 'Status') {
         $taskCurrent=Get-ItemProperty -LiteralPath $taskRegistry
         $taskSame=$taskState -and $taskState.Active -and $taskState.Mode -eq $Mode -and $taskState.Target -eq $taskTarget
@@ -233,9 +446,12 @@ function Invoke-World {
         } | ConvertTo-Json -Compress
         return
     }
-    if ($Action -eq 'Cleanup') { Stop-Cleanup $taskState; return }
-    if ($Action -eq 'Stop') { Stop-World $taskState; Write-Output 'Profile services stopped; previous routing restored.'; return }
-    $taskPython=if ($PythonExe) { (Get-Item -LiteralPath $PythonExe).FullName } else { (Get-Command python.exe).Source }
+    $taskPython=''
+    if ($PythonExe) { $taskPython=(Get-Item -LiteralPath $PythonExe).FullName }
+    else { $taskPythonCommand=Get-Command python.exe -ErrorAction SilentlyContinue; if ($taskPythonCommand) { $taskPython=$taskPythonCommand.Source } }
+    if ($Action -eq 'Cleanup') { if (-not (Client-Running)) { Recover-LaunchRecords $taskState }; Stop-Cleanup $taskState; return }
+    if ($Action -eq 'Stop') { Recover-LaunchRecords $taskState; Stop-World $taskState; Write-Output 'Profile services stopped; previous routing restored.'; return }
+    if (-not $taskPython) { throw 'Python executable was not found.' }
     if ($Action -eq 'Backup') {
         $taskBackup=Python-Json @('backup','--base',$taskBase,'--mode',$Mode)
         Write-Output $taskBackup.backup; return
@@ -243,6 +459,7 @@ function Invoke-World {
     if (Client-Running) {
         if (-not $taskState -or -not $taskState.Active -or $taskState.Mode -ne $Mode -or $taskState.Target -ne $taskTarget -or $taskState.Uid -ne $Uid) { throw 'Close the game before changing its mode or UID.' }
     }
+    Recover-LaunchRecords $taskState
     if ($taskState -and $taskState.Active -and ($taskState.Mode -ne $Mode -or $taskState.Target -ne $taskTarget)) { throw 'Stop the current world before switching modes or host addresses.' }
     if ($taskState -and $taskState.Active -and -not $taskState.Gateway) { Stop-World $taskState; $taskState=$null }
     # Migrate the old shared controller exactly once, preserving its proxy snapshot.
@@ -256,6 +473,17 @@ function Invoke-World {
         }
     }
     if ($LaunchClient -and -not (Test-Path -LiteralPath $taskOriginalClient)) { throw 'Game client not found. Select the local Bilibili PC installation for solo play.' }
+    if ($taskState) {
+        foreach ($taskRole in @('Proxy','Gateway','Server')) {
+            if ($taskState.$taskRole -and -not (Test-OwnedRecord $taskState.$taskRole)) { throw "The $taskRole process record is incomplete; refusing to replace it." }
+        }
+        # Recover from a crash between process termination and the state update.
+        # Never overwrite an inactive record that still identifies a live owned process.
+        if (-not $taskState.Active -or $taskState.Target -ne $taskTarget) {
+            Stop-World $taskState
+            $taskState=$null
+        }
+    }
     $taskInfo=Python-Json @('prepare','--root',$GameRoot,'--base',$taskBase,'--mode',$Mode,'--host',$taskTarget)
     if (-not $taskState -or -not $taskState.Active) {
         $taskBefore=Get-ItemProperty -LiteralPath $taskRegistry
@@ -264,12 +492,19 @@ function Invoke-World {
             $taskValue=$taskBefore.PSObject.Properties[$taskName]
             $taskSnapshot[$taskName]=@{ Exists=$null -ne $taskValue; Value=if ($taskValue) { $taskValue.Value } else { $null } }
         }
-        $taskState=[pscustomobject]@{ Active=$true; Mode=$Mode; Target=$taskTarget; Profile=$taskProfile; Uid=$Uid; ProxyBefore=$null; PacUrl=''; Server=$null; Proxy=$null; Gateway=$null }
+        $taskState=[pscustomobject]@{ Active=$true; Mode=$Mode; Target=$taskTarget; Profile=$taskProfile; Uid=$Uid; Python=$taskPython; ProxyBefore=$null; PacUrl=''; Server=$null; Proxy=$null; Gateway=$null }
+        Save-State $taskState
+    }
+    if (-not $taskState.Python) {
+        if ($taskState.Gateway -and -not [string]::Equals([string]$taskState.Gateway.Path,$taskPython,[StringComparison]::OrdinalIgnoreCase)) {
+            throw 'The existing gateway uses a different Python executable; stop it with that launcher runtime.'
+        }
+        $taskState.Python=$taskPython
         Save-State $taskState
     }
     try {
         if (-not (Process-Matches $taskState.Server)) {
-            foreach ($taskPort in @($taskHttp,$taskGateway,$taskLogPort)) { if (Test-Port $taskTarget $taskPort) { throw "Profile port $taskPort is occupied by another service." } }
+            foreach ($taskPort in @($taskHttp,$taskGateway,($taskGateway+1),$taskLogPort)) { if (Test-Port $taskTarget $taskPort) { throw "Profile port $taskPort is occupied by another service." } }
             $taskState.Server=Start-Background $taskExecutable $taskProfile 'server' @('-c',(Join-Path $taskProfile 'config.json'))
             Save-State $taskState
             Wait-Ready $taskTarget $taskHttp $taskState.Server
@@ -305,7 +540,11 @@ function Invoke-World {
                 Write-Output 'Client launched with local UID SDK.'
             }
         }
-    } catch { Stop-World $taskState; throw }
+    } catch {
+        $taskStartError=$_
+        try { Stop-World $taskState } catch { throw ("$($taskStartError.Exception.Message); cleanup failed: $($_.Exception.Message)") }
+        throw $taskStartError
+    }
 }
 
 $taskExitCode=0
@@ -318,8 +557,21 @@ try {
     }
     $taskOutput=(Invoke-World | Out-String).Trim()
     $taskResult=@{ Code=0; Output=$taskOutput; Error='' }
-} catch { $taskExitCode=1; $taskResult=@{ Code=1; Output=''; Error=$_.Exception.Message } }
+} catch { $taskExitCode=1; $taskResult=@{ Code=1; Output=''; Error=$_.Exception.Message }; Write-LifecycleEvidence $Action $taskResult.Error $script:taskLastState }
 finally { if ($taskLockHeld) { $taskLock.ReleaseMutex() }; $taskLock.Dispose() }
-if ($ResultPath) { [IO.File]::WriteAllText($ResultPath,($taskResult | ConvertTo-Json -Compress -Depth 6),[Text.UTF8Encoding]::new($false)) }
+if ($ResultPath) {
+    [IO.Directory]::CreateDirectory((Split-Path -Parent $ResultPath)) | Out-Null
+    $taskResultTemporary="$ResultPath.$([Guid]::NewGuid().ToString('N')).tmp"
+    try {
+        [IO.File]::WriteAllText($taskResultTemporary,($taskResult | ConvertTo-Json -Compress -Depth 8),[Text.UTF8Encoding]::new($false))
+        if (Test-Path -LiteralPath $ResultPath) {
+            # Windows PowerShell 5 rejects a null backup path on Replace.
+            $taskResultBackup="$ResultPath.bak"
+            [IO.File]::Replace($taskResultTemporary,$ResultPath,$taskResultBackup)
+            if (Test-Path -LiteralPath $taskResultBackup) { [IO.File]::Delete($taskResultBackup) }
+        }
+        else { [IO.File]::Move($taskResultTemporary,$ResultPath) }
+    } finally { if (Test-Path -LiteralPath $taskResultTemporary) { [IO.File]::Delete($taskResultTemporary) } }
+}
 else { if ($taskExitCode) { Write-Error $taskResult.Error } else { Write-Output $taskResult.Output } }
 exit $taskExitCode

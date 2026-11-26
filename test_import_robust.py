@@ -130,7 +130,7 @@ class RobustImportTests(unittest.TestCase):
         self.assertEqual(restored["weapon"]["weapon_id"], 1001001)
         self.assertEqual(restored["weapon"]["instance_id"], 151)
         self.assertEqual(restored["weapon"]["level"], 26)
-        self.assertNotIn("field_99", restored["weapon"])
+        self.assertEqual(restored["weapon"]["field_99"], 7)
         self.assertEqual(unresolved, 1)
 
     def test_schema_restore_leaves_named_fields_untouched(self):

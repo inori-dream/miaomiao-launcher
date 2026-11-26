@@ -8,6 +8,8 @@ import sqlite3
 import gzip
 import zipfile
 import os
+import subprocess
+import sys
 import ctypes
 from contextlib import closing
 
@@ -160,6 +162,36 @@ class DataAndUidTests(unittest.TestCase):
         finally:
             if previous is None:os.environ.pop('LOLO_SDK_UID',None)
             else:os.environ['LOLO_SDK_UID']=previous
+
+    def test_native_uid_rejects_invalid_values(self):
+        script = """
+import ctypes, json
+from pathlib import Path
+callback_type = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_int)
+messages = []
+callback = callback_type(lambda data, length: messages.append(json.loads(ctypes.string_at(data, length))))
+library = ctypes.CDLL(str(Path('LocalUidSDK.dll').resolve()))
+library.SDKLogin.argtypes = [callback_type]
+print(json.dumps({'code': library.SDKLogin(callback), 'messages': messages}))
+"""
+        for value in ('0', '4294967296', '10000000000', 'abc', '-1', ' 1000000'):
+            environment = dict(os.environ, LOLO_SDK_UID=value)
+            result = subprocess.run([sys.executable, '-c', script], cwd=Path(__file__).parent,
+                                    env=environment, capture_output=True, text=True, check=True)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload['code'], -1, value)
+            self.assertEqual(payload['messages'], [], value)
+        environment = dict(os.environ)
+        environment.pop('LOLO_SDK_UID', None)
+        result = subprocess.run([sys.executable, '-c', script], cwd=Path(__file__).parent,
+                                env=environment, capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(result.stdout)['code'], -1)
+        environment['LOLO_SDK_UID'] = '4294967295'
+        result = subprocess.run([sys.executable, '-c', script], cwd=Path(__file__).parent,
+                                env=environment, capture_output=True, text=True, check=True)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload['code'], 0)
+        self.assertEqual(payload['messages'][-1]['data']['uid'], '4294967295')
 
     def test_snappy_overlap_and_invalid_copy(self):
         self.assertEqual(room_gateway.snappy(b'\x09\x08abc\x16\x03\x00'),b'abcabcabc')

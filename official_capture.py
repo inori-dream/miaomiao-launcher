@@ -278,8 +278,10 @@ def result_from_export(export: Path, session: Path):
             raise ValueError("账号ZIP不能链接到输出目录之外。")
         from capture_zip import inspect_account_zip
         inspect_account_zip(account_zip)
+    incomplete_streams = summary.get("incomplete_streams")
     result = {"session": str(session), "export": str(export),
-              "accountZip": str(account_zip) if account_zip else "", "playerUids": summary["player_uids"]}
+              "accountZip": str(account_zip) if account_zip else "", "playerUids": summary["player_uids"],
+              "incompleteStreams": len(incomplete_streams) if isinstance(incomplete_streams, list) else 0}
     if isinstance(summary.get("exploration"), dict):
         # The full evidence stays in export/ZIP. Keep GUI IPC and status polling
         # bounded instead of repeating thousands of IDs and packet records.
@@ -441,6 +443,7 @@ def status() -> dict:
         "startedAt": state.get("startedAt", ""),
         "playerUids": state.get("playerUids", []),
         "accountZip": state.get("accountZip", ""),
+        "incompleteStreams": int(state.get("incompleteStreams", 0) or 0),
         "ready": readiness["ok"],
         "problems": readiness["problems"],
     }
