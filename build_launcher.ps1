@@ -18,7 +18,7 @@ if (-not $IntermediateDirectory) {
 $taskIntermediate = [IO.Path]::GetFullPath($IntermediateDirectory)
 $taskSnapshot = Join-Path $taskIntermediate 'launcher-src'
 $taskCompiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-$taskSources = @('Launcher.cs', 'SeasideUI.cs', 'RoomManagerForm.cs', 'Strings.cs')
+$taskSources = @('Launcher.cs', 'Friendly.cs', 'SeasideUI.cs', 'RoomManagerForm.cs', 'Strings.cs', 'UpdaterUI.cs')
 $taskAssets = @('launcher.manifest', 'launcher.ico')
 $taskReferences = @(
     '/reference:System.Windows.Forms.dll'

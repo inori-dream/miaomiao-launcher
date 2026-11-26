@@ -113,9 +113,29 @@ def report(counts=None, empty=None, *, phase='idle', readable=False, warning='',
         else:state='missing' if final and readable else 'waiting' if readable else 'unknown'
         items.append({'id':key,'label':label,'state':state,'status':STATES[state],
                       'count':count,'evidence':evidence,'hint':hint})
+    if not warning:
+        warning=equipment_warning(counts)
     return {'phase':phase,'readable':readable,'updatedAt':updated or dt.datetime.now().isoformat(timespec='seconds'),
             'warning':warning,'warningEn':warning_en,'items':items,'counts':dict(counts),'emptyCounts':dict(empty),
             'livePackets':live_packets}
+
+
+def equipment_warning(counts):
+    """PackNotice gear is not the authoritative equipment list.
+
+    A character's equipment slots point at instance ids that only GetWeaponRsp /
+    GetArmorRsp / GetPosterRsp enumerate. Seeing gear in PackNotice marks the group
+    as collected, which reads as complete while most equipped instances are absent,
+    so say so explicitly before the player trusts the capture.
+    """
+    if not counts:return ''
+    missing=[]
+    for group,list_name in (('weapon','GetWeaponRsp'),('armor','GetArmorRsp'),('poster','GetPosterRsp')):
+        if counts.get('@'+group) and not counts.get(list_name):missing.append(list_name)
+    if not missing:return ''
+    return ('武器／护甲／海报只看到了背包快照，缺少 '+'、'.join(missing)+
+            ' 响应：角色装备栏引用的实例大多不在包里，导入后装备会不全。'
+            '请打开对应的装备界面翻页后再采集。')
 
 
 def final_report(export):

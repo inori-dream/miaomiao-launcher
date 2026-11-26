@@ -153,5 +153,119 @@ class RobustImportTests(unittest.TestCase):
         self.assertEqual(payload["item"]["itemWeaponMap"]["151"]["level"], 26)
 
 
+class GardenImportTests(unittest.TestCase):
+    """The garden lives in of_home, a table the importer used to skip entirely."""
+
+    HOME_DDL = """
+        CREATE TABLE of_home(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER, scene_id INTEGER, garden_name TEXT,
+            likes_num INTEGER, access_player_num INTEGER, left_like_num INTEGER,
+            is_open NUMERIC, password TEXT, password_expire_time INTEGER,
+            garden_furniture_info_map BLOB, placed_character_map BLOB);
+        CREATE UNIQUE INDEX idx_id ON of_home(user_id, scene_id);
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.profile, self.database = profile(self.root)
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.executescript(self.HOME_DDL)
+        self.uid = 5556667
+
+    def main(self):
+        return {"status": "StatusCode_OK", "player_id": self.uid, "player_label": self.uid,
+                "player_name": "Gardener", "level": 30, "characters": []}
+
+    def garden_notice(self, furniture, channel=None, scene_id=9999):
+        return {"data": {
+            "scene_id": scene_id,
+            "channel_id": channel if channel is not None else self.uid,
+            "channel_label": channel if channel is not None else self.uid,
+            "scene_garden_data": {
+                "likes_num": 1234, "access_player_num": 56, "left_like_num": 7,
+                "garden_name": "小花园", "is_open": True, "password": "",
+                "garden_furniture_info_map": furniture,
+            },
+        }}
+
+    def import_garden(self, furniture, **kwargs):
+        notice = self.garden_notice(furniture, **kwargs)
+        source = build_zip(self.root / "g.zip", self.main(),
+                           {"00003_s2c_1016_SceneDataNotice.json": notice})
+        capture_import.import_capture(source, self.profile, self.uid, True, True)
+
+    def read_home(self):
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.row_factory = sqlite3.Row
+            row = connection.execute("SELECT * FROM of_home WHERE user_id=?",
+                                     (self.uid,)).fetchone()
+        return dict(row) if row else None
+
+    def read_payload(self):
+        import gzip
+        with closing(sqlite3.connect(self.database)) as connection:
+            row = connection.execute(
+                "SELECT bin_data FROM of_game ORDER BY rowid DESC LIMIT 1").fetchone()
+        return json.loads(gzip.decompress(row[0]).decode("utf-8"))
+
+    def test_furniture_reaches_of_home_as_json(self):
+        self.import_garden({
+            "29855943319617915": {"furniture_id": "29855943319617915",
+                                  "furniture_item_id": 5041102,
+                                  "pos": {"x": 1815, "z": -1143},
+                                  "rotation": {"y": 19745}},
+        })
+        home = self.read_home()
+        self.assertIsNotNone(home, "of_home row was not written")
+        self.assertEqual(home["scene_id"], 9999)
+        self.assertEqual(home["likes_num"], 1234)
+        self.assertEqual(home["access_player_num"], 56)
+        payload = json.loads(home["garden_furniture_info_map"].decode("utf-8"))
+        self.assertEqual(len(payload), 1)
+        item = payload["29855943319617915"]
+        self.assertEqual(item["furnitureId"], 29855943319617915)
+        self.assertEqual(item["furnitureItemId"], 5041102)
+        # The server decodes Vector3 without omitempty, so every axis must exist.
+        self.assertEqual(item["pos"], {"x": 1815, "y": 0, "z": -1143})
+        self.assertEqual(item["rotation"], {"x": 0, "y": 19745, "z": 0})
+
+    def test_garden_of_another_channel_is_ignored(self):
+        self.import_garden({"1": {"furniture_id": "1", "furniture_item_id": 9}},
+                           channel=999999)
+        self.assertIsNone(self.read_home())
+
+    def test_placed_furniture_counts_reach_the_item_map(self):
+        """AddFurnitureItem increments this map; skipping it under-counts placed items."""
+        main = self.main()
+        main["furniture_item_info"] = [
+            {"item_id": 5041102, "num": "1"},
+            {"item_id": 5043911, "num": "2"},
+        ]
+        source = build_zip(self.root / "f.zip", main, {})
+        capture_import.import_capture(source, self.profile, self.uid, True, True)
+        payload = self.read_payload()
+        furniture = payload["item"]["furnitureItemMap"]
+        self.assertEqual(furniture["5041102"]["num"], 1)
+        self.assertEqual(furniture["5043911"]["num"], 2)
+        self.assertEqual(furniture["5041102"]["itemId"], 5041102)
+
+    def test_non_garden_scene_is_ignored(self):
+        self.import_garden({"1": {"furniture_id": "1", "furniture_item_id": 9}},
+                           scene_id=1001)
+        self.assertIsNone(self.read_home())
+
+    def test_reimport_replaces_the_row_instead_of_duplicating(self):
+        self.import_garden({"1": {"furniture_id": "1", "furniture_item_id": 9}})
+        self.import_garden({"2": {"furniture_id": "2", "furniture_item_id": 8}})
+        with closing(sqlite3.connect(self.database)) as connection:
+            rows = connection.execute("SELECT COUNT(*) FROM of_home").fetchone()[0]
+        self.assertEqual(rows, 1)
+        payload = json.loads(self.read_home()["garden_furniture_info_map"].decode("utf-8"))
+        self.assertEqual(list(payload), ["2"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -293,6 +293,21 @@ def safe_player_name(name: str) -> str:
     return re.sub(r'[\\/:*?"<>|\s\x00-\x1f]+', "_", name).strip("_.")[:40] or "未知玩家"
 
 
+def account_archive_files(out_dir: Path, base: Iterable[Path]) -> List[Path]:
+    """Everything the account ZIP should contain, including garden archives.
+
+    Gardens and own-channel scenes are written into their own subdirectories. They
+    must be collected explicitly: leaving them out made the checklist report the
+    garden as collected while the ZIP the user opens contained no garden at all.
+    """
+    files = list(base)
+    for folder in ("gardens", "my-scenes"):
+        directory = out_dir / folder
+        if directory.is_dir():
+            files.extend(sorted(path for path in directory.rglob("*") if path.is_file()))
+    return files
+
+
 def write_zip(path: Path, files: Iterable[Path]) -> None:
     with NamedTemporaryFile(dir=path.parent, suffix=".tmp", delete=False) as temporary:
         temporary_path = Path(temporary.name)
@@ -305,19 +320,30 @@ def write_zip(path: Path, files: Iterable[Path]) -> None:
         temporary_path.unlink(missing_ok=True)
 
 
+def is_garden_scene(scene: net_pb2.SceneData) -> bool:
+    """Only scene 9999, or a garden that actually carries furniture, is a garden.
+
+    The official server also attaches an EMPTY scene_garden_data to ordinary
+    open-world snapshots (scene 1/2/3/5/1001/...). Treating "field present" as
+    "garden" moved those map snapshots into gardens/ and lost exploration data.
+    """
+    if scene.scene_id == 9999:
+        return True
+    return scene.HasField("scene_garden_data") and scene.scene_garden_data.ByteSize() > 0
+
+
 def collect_garden_scene(
     scene: net_pb2.SceneData,
     layouts: dict[int, net_pb2.SceneGardenData],
     names: dict[int, str],
 ) -> Optional[int]:
-    has_layout = scene.HasField("scene_garden_data")
-    if scene.scene_id != 9999 and not has_layout:
+    if not is_garden_scene(scene):
         return None
     for player in scene.players:
         if player.player_id and player.player_name:
             names.setdefault(player.player_id, player.player_name)
     owner_uid = scene.channel_id or scene.channel_label
-    if owner_uid and has_layout:
+    if owner_uid and scene.HasField("scene_garden_data") and scene.scene_garden_data.ByteSize() > 0:
         layout = scene.scene_garden_data
         previous = layouts.get(owner_uid)
         if previous is None or len(layout.garden_furniture_info_map) >= len(previous.garden_furniture_info_map):
@@ -386,6 +412,82 @@ def write_garden_backups(
         print(f"[注意] 无法确认屋主 UID 的场景数据留在 {out_dir / 'unknown'}")
 
 
+def scene_owner(scene: net_pb2.SceneData) -> int:
+    """Who a scene snapshot belongs to: its channel id, else channel label."""
+    return int(scene.channel_id or scene.channel_label or 0)
+
+
+def write_own_scene_backup(
+    out_dir: Path,
+    scenes: dict[int, list[net_pb2.SceneData]],
+    account_uid: Optional[int],
+    names: dict[int, str],
+) -> Optional[dict]:
+    """Archive only the player's OWN channel scenes as one browsable bundle.
+
+    Visiting someone else's world is not this account's data, so anything whose
+    owner differs from the captured account is skipped outright.
+    """
+    if account_uid is None or not scenes:
+        return None
+    mine = list(scenes.get(account_uid, ()))
+    if not mine:
+        return None
+    target = out_dir / "my-scenes"
+    target.mkdir(parents=True, exist_ok=True)
+    safe_name = safe_player_name(names.get(account_uid, "未知玩家"))
+    # A scene may be re-sent after each change; keep the most complete snapshot.
+    richest: dict[int, net_pb2.SceneData] = {}
+    for scene in mine:
+        key = int(scene.scene_id)
+        current = richest.get(key)
+        if current is None or scene.ByteSize() >= current.ByteSize():
+            richest[key] = scene
+    files: List[Path] = []
+    rows = []
+    for key in sorted(richest):
+        scene = richest[key]
+        stem = f"scene_{key}"
+        bin_path = target / f"{stem}.bin"
+        json_path = target / f"{stem}.json"
+        bin_path.write_bytes(scene.SerializeToString())
+        readable = json_format.MessageToDict(scene, preserving_proto_field_name=True)
+        summary = {
+            "scene_id": int(scene.scene_id),
+            "channel_id": int(scene.channel_id or 0),
+            "channel_label": int(scene.channel_label or 0),
+            "weather": readable.get("weather_type"),
+            "tod_time": int(scene.tod_time or 0),
+            "players": len(scene.players),
+            "garden_furniture": len(scene.scene_garden_data.garden_furniture_info_map)
+            if scene.HasField("scene_garden_data") else 0,
+            "placed_characters": len(scene.placed_characters),
+            "room_decor": len(scene.room_decor_list),
+            "vehicles": len(scene.vehicle_info_list),
+            "chairs": len(scene.chair_info_list),
+            "camp_fires": len(scene.camp_fires),
+            "bon_fires": len(scene.bon_fires),
+            "treasure_boxes": len(scene.treasure_boxes),
+            "collect_items": sum(len(group.item_map) for group in scene.collections),
+            "areas": len(scene.areas),
+        }
+        readable["_summary"] = summary
+        json_path.write_text(json.dumps(readable, ensure_ascii=False, indent=2), encoding="utf-8")
+        files.extend((bin_path, json_path))
+        rows.append(dict(summary, bin_file=bin_path.name, json_file=json_path.name))
+    if not rows:
+        return None
+    index = target / "index.json"
+    index.write_text(json.dumps({"owner_uid": account_uid, "owner_name": names.get(account_uid, ""),
+                                 "scenes": rows}, ensure_ascii=False, indent=2), encoding="utf-8")
+    files.append(index)
+    zip_path = target / f"my_scenes_{safe_name}_{account_uid}.zip"
+    write_zip(zip_path, files)
+    print(f"已保存自己的频道场景 {len(rows)} 个 -> {zip_path}")
+    return {"owner_uid": account_uid, "scene_count": len(rows),
+            "scenes": [row["scene_id"] for row in rows], "zip_file": zip_path.name}
+
+
 def analyze_pcap(pcap_path: Path, out_dir: Path) -> None:
     pcap_path = prepare_capture(pcap_path)
     cmd_map = load_cmd_map()
@@ -414,6 +516,7 @@ def analyze_pcap(pcap_path: Path, out_dir: Path) -> None:
     garden_layouts: dict[int, net_pb2.SceneGardenData] = {}
     player_names: dict[int, str] = {}
     garden_packets: dict[int, list[str]] = defaultdict(list)
+    own_scenes: dict[int, list[net_pb2.SceneData]] = defaultdict(list)
 
     for sid in streams:
         gap_directions: set[int] = set()
@@ -517,6 +620,11 @@ def analyze_pcap(pcap_path: Path, out_dir: Path) -> None:
                     garden_uid = 0
                     if decoded is not None:
                         scene = net_pb2.SceneDataNotice.FromString(body).data
+                        owner = scene_owner(scene)
+                        if owner:
+                            # Remember every snapshot; only the account's own
+                            # channel is archived later.
+                            own_scenes[owner].append(scene)
                         garden_uid = collect_garden_scene(scene, garden_layouts, player_names)
                     current_garden_uid = garden_uid or 0
                     if garden_uid is not None:
@@ -564,6 +672,7 @@ def analyze_pcap(pcap_path: Path, out_dir: Path) -> None:
 
     player_uids = sorted(observed_player_uids)
     account_uid = player_uids[0] if len(player_uids) == 1 else None
+    own_scene_summary = write_own_scene_backup(out_dir, own_scenes, account_uid, player_names)
     separated = separate_garden_packets(out_dir, garden_packets, account_uid)
     if separated:
         garden_layouts.pop(account_uid, None)
@@ -599,6 +708,7 @@ def analyze_pcap(pcap_path: Path, out_dir: Path) -> None:
         "omitted_login_requests": omitted_login_requests,
         "sanitized_login_responses": sanitized_login_responses,
         "separate_garden_uids": sorted(separated.keys() - {0}),
+        "my_scenes": own_scene_summary,
     }
     summary_path = out_dir / "summary.json"
     if account_uid is not None:
@@ -608,8 +718,9 @@ def analyze_pcap(pcap_path: Path, out_dir: Path) -> None:
         summary["account_zip"] = account_zip.name
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     if account_uid is not None:
-        files = [summary_path, exploration_path, exploration_text_path,
-                 *sorted(raw_dir.glob("*.bin")), *sorted(json_dir.glob("*.json"))]
+        files = account_archive_files(out_dir, [
+            summary_path, exploration_path, exploration_text_path,
+            *sorted(raw_dir.glob("*.bin")), *sorted(json_dir.glob("*.json"))])
         write_zip(account_zip, files)
         print(f"已保存账号 ZIP {account_zip}")
 

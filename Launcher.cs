@@ -15,13 +15,13 @@ using System.Windows.Forms;
 
 [assembly: System.Reflection.AssemblyVersion("1.1.0.0")]
 #if ENGLISH
-[assembly: System.Reflection.AssemblyFileVersion("1.3.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersion("1.3.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.4.9.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("1.4.9")]
 [assembly: System.Reflection.AssemblyTitle("OverField International Launcher")]
 [assembly: System.Reflection.AssemblyProduct("OverField International Launcher")]
 #else
-[assembly: System.Reflection.AssemblyFileVersion("1.3.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersion("1.3.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.4.9.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("1.4.9")]
 [assembly: System.Reflection.AssemblyTitle("开放空间私服启动器")]
 [assembly: System.Reflection.AssemblyProduct("开放空间私服启动器")]
 #endif
@@ -68,15 +68,7 @@ namespace OverFieldLocal
                 string previewDir = previewIndex >= 0 && previewIndex + 1 < args.Length ? args[previewIndex + 1] : null;
                 Application.ThreadException += delegate(object sender, ThreadExceptionEventArgs e)
                 {
-                    if (previewDir != null)
-                    {
-                        // Preview artifacts are already written before teardown paint
-                        // messages can fail in offscreen/headless sessions.
-                        bool complete = Native.PreviewComplete(previewDir);
-                        if (!complete) Native.WritePreviewError(previewDir, e.Exception);
-                        Environment.Exit(complete ? 0 : 3);
-                    }
-                    MessageBox.Show(Loc.S("操作未完成：") + e.Exception.Message, Loc.S("开放空间启动器"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    MessageBox.Show(Loc.S("操作未完成：") + Friendly.Describe(e.Exception, ""), Loc.S("开放空间启动器"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 };
                 try
                 {
@@ -632,7 +624,7 @@ namespace OverFieldLocal
                     Append(detail);
                     MessageBox.Show(this,PreflightText(report,true),Loc.S("采集预检查"),MessageBoxButtons.OK,
                         report.ContainsKey("ok") && Convert.ToBoolean(report["ok"]) ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
-                } catch(Exception error) { Append(error.Message);MessageBox.Show(this,error.Message,Loc.S("采集预检查")); }
+                } catch(Exception error) { string friendly=Friendly.Describe(error,Loc.S("采集预检查")); Append(friendly+"  "+Loc.S("详细原因：")+Friendly.Detail(error)); MessageBox.Show(this,Friendly.WithCaptureCauses(friendly),Loc.S("采集预检查"),MessageBoxButtons.OK,MessageBoxIcon.Warning); }
                 finally { SetBusy(false, ""); }
             };
             captureStop.Enabled = false;
@@ -641,7 +633,7 @@ namespace OverFieldLocal
                 if(busy || captureRunning || !File.Exists(lastCaptureZip)) return;
                 SetBusy(true, Loc.S("正在另存账号 ZIP"));
                 try { await SaveCaptureZip(lastCaptureZip); }
-                catch(Exception error) { Append(error.Message); captureHint.Text=error.Message; }
+                catch(Exception error) { ReportError("另存账号 ZIP", error, true); }
                 finally { SetBusy(false, ""); }
             };
             hostMode.Click += async delegate { await SwitchMode("host"); };
@@ -692,8 +684,8 @@ namespace OverFieldLocal
                     if (result.ContainsKey("hint")) Append(Convert.ToString(result["hint"]));
                     captureHint.Text = Loc.S("采集中：公服启动器已打开，请正常登录并加载要保存的界面，完成后点「结束采集」。");
                 }
-                catch (Exception error) { Append(error.Message); captureHint.Text = error.Message; }
-                finally { backend.CaptureStartInFlight=false; captureStartInFlight=false; SetBusy(false, ""); }
+                catch (Exception error) { ReportError("开始采集", error, true); }
+                finally { backend.CaptureStartInFlight=false; SetBusy(false, ""); }
                 await RefreshCaptureState();
             };
             captureStop.Click += async delegate
@@ -720,10 +712,18 @@ namespace OverFieldLocal
                         return;
                     }
                     lastCaptureZip = zip;
+                    bool captureIncomplete=false;
                     if(captured.ContainsKey("quality")) {
                         var quality=captured["quality"] as Dictionary<string,object>;
                         if(quality!=null && quality.ContainsKey("successful_decode_count")) Append(Loc.S("成功解码响应/消息数：")+Convert.ToString(quality["successful_decode_count"]));
                         if(quality!=null && quality.ContainsKey("trailing_bytes_count") && Convert.ToInt64(quality["trailing_bytes_count"])>0) Append(Loc.S("发现残缺流尾；请查看采集报告，不能视为完整备份。"));
+                        if(quality!=null && quality.ContainsKey("tcp_gap_count") && Convert.ToInt64(quality["tcp_gap_count"])>0) { captureIncomplete=true; Append(Loc.S("检测到抓包缺口或未解码数据，备份可能不完整。")); }
+                    }
+                    if(captureIncomplete) captureHint.Text=Loc.S("检测到抓包缺口或未解码数据，备份可能不完整。");
+                    if(captured.ContainsKey("myScenes")) {
+                        var scenes=captured["myScenes"] as Dictionary<string,object>;
+                        int sceneCount=scenes!=null && scenes.ContainsKey("sceneCount") ? Convert.ToInt32(scenes["sceneCount"]) : 0;
+                        if(sceneCount>0) Append(Loc.S("已保存自己频道的场景备份：")+sceneCount+Loc.S(" 个，见 my-scenes 目录；他人频道不纳入。"));
                     }
                     if(captured.ContainsKey("exploration")) {
                         var exploration=captured["exploration"] as Dictionary<string,object>;
@@ -764,7 +764,7 @@ namespace OverFieldLocal
                     Append(Loc.S("账号已写入数据库：UID ") + usedUid + "（" + Convert.ToString(imported["name"]) + "）。");
                     captureHint.Text = Loc.S("已入库：UID ") + usedUid + Loc.S("。可用该 UID 登录当前模式。");
                 }
-                catch (Exception error) { Append(error.Message); captureHint.Text = error.Message; }
+                catch (Exception error) { ReportError("账号入库", error, true); }
                 finally { SetBusy(false, ""); }
                 await RefreshCaptureState();
             };
@@ -777,7 +777,7 @@ namespace OverFieldLocal
                 string blocked=PrivateOperationBlockReason(); if(blocked.Length>0) { Append(blocked); return; }
                 SetBusy(true,Loc.S("正在设置局域网权限"));
                 try { await Task.Run(() => { backend.PrepareProfile(); backend.EnableLanFirewall(); }); Append(Loc.S("已允许同一局域网访问当前服务。")); }
-                catch (Exception e) { Append(e.Message); }
+                catch (Exception e) { ReportError("设置局域网权限", e, false); }
                 finally { SetBusy(false,""); }
                 await RefreshStatus();
             };
@@ -838,19 +838,21 @@ namespace OverFieldLocal
                 backend.CancelAll();
                 // Detached services would otherwise survive this process and keep
                 // holding 18080/18100. Reap only what this launcher started.
-                if (uiPreview || smokePath != null || e.CloseReason == CloseReason.WindowsShutDown)
-                { Environment.Exit(0); return; }
-                Enabled = false;
-                backend.StopCaptureQuietly();
-                // Cleanup runs off the UI thread and has a hard close deadline.
-                // A stuck controller must not freeze the window or block shutdown.
-                var shutdownDeadline = new System.Windows.Forms.Timer { Interval = 3000 };
-                shutdownDeadline.Tick += delegate { shutdownDeadline.Dispose(); Environment.Exit(0); };
-                shutdownDeadline.Start();
-                try { await Task.Run(() => backend.Cleanup()); }
-                catch { }
-                finally { shutdownDeadline.Dispose(); Environment.Exit(0); }
+                if (!updaterHandoff && !uiPreview && smokePath == null && e.CloseReason != CloseReason.WindowsShutDown)
+                {
+                    Enabled = false;
+                    backend.StopCaptureQuietly();
+                    // Cleanup runs off the UI thread and has a hard close deadline.
+                    // A stuck controller must not freeze the window or block shutdown.
+                    var shutdownDeadline = new System.Windows.Forms.Timer { Interval = 3000 };
+                    shutdownDeadline.Tick += delegate { shutdownDeadline.Dispose(); Environment.Exit(0); };
+                    shutdownDeadline.Start();
+                    try { await Task.Run(() => backend.Cleanup()); }
+                    catch { }
+                    finally { shutdownDeadline.Dispose(); Environment.Exit(0); }
+                }
             };
+            InitializeUpdater(args);
         }
         void ConfigureAccessibility()
         {
@@ -1013,7 +1015,7 @@ namespace OverFieldLocal
                 var data=await Task.Run(() => backend.Official("progress"));
                 if(closing) return;
                 RenderCaptureProgress(data);
-            } catch(Exception error) { if(!closing) captureProgressHint.Text=Loc.S("项目状态暂不可读：")+error.Message; }
+            } catch(Exception error) { if(!closing) captureProgressHint.Text=Loc.S("项目状态暂不可读：")+Friendly.Describe(error,"采集进度"); }
             finally { checkingCaptureProgress=false; }
         }
         void RenderCaptureProgress(Dictionary<string,object> data)
@@ -1059,7 +1061,7 @@ namespace OverFieldLocal
             try {
                 string explorer=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),"explorer.exe");
                 Process.Start(new ProcessStartInfo(explorer,"/select,"+Backend.Quote(saved)){UseShellExecute=true});
-            } catch(Exception error) { Append(Loc.S("文件已保存，但无法打开所在位置：")+error.Message); }
+            } catch(Exception error) { if(!closing) Append(Loc.S("文件已保存，但无法打开所在位置：")+Friendly.Describe(error,"打开所在位置")); }
             return true;
         }
         async Task<bool> ChooseOfficialLauncher(bool alreadyBusy = false)
@@ -1082,8 +1084,8 @@ namespace OverFieldLocal
                 else Append(Loc.S("公服启动器路径已独立保存，私服游戏目录未改变。"));
                 return true;
             }
-            catch(Exception error) { Append(error.Message); MessageBox.Show(this,error.Message,Loc.S("公服路径不可用"),MessageBoxButtons.OK,MessageBoxIcon.Warning); return false; }
-            finally { if(!alreadyBusy) SetBusy(false, ""); }
+            catch(Exception error) { string friendly=Friendly.Describe(error,"选择公服路径"); Append(friendly+"  "+Loc.S("详细原因：")+Friendly.Detail(error)); MessageBox.Show(this,friendly,Loc.S("公服路径不可用"),MessageBoxButtons.OK,MessageBoxIcon.Warning); return false; }
+            finally { SetBusy(false, ""); }
         }
         async Task RefreshCaptureState()
         {
@@ -1095,8 +1097,7 @@ namespace OverFieldLocal
                 if(busy || closing) return;
                 ApplyCaptureState(state);
             }
-            catch(Exception error) { if(!closing) Append(Loc.S("采集状态检查失败：")+error.Message); }
-            finally { checkingCaptureState=false; }
+            catch(Exception error) { if(!closing) Append(Loc.S("采集状态检查失败：")+Friendly.Describe(error,"采集状态检查")); }
         }
         internal void ApplyCaptureState(Dictionary<string,object> state)
         {
@@ -1180,7 +1181,7 @@ namespace OverFieldLocal
                      : mode=="steam" ? Loc.S("已切换到国际服（Steam），使用独立的英文存档。")
                      : Loc.S("已切换到局域网服务端，使用独立联机存档。"));
             }
-            catch (Exception error) { Append(Loc.S("切换失败：") + error.Message); }
+            catch (Exception error) { Append(Loc.S("切换失败：") + Friendly.Describe(error,"切换模式")); }
             finally
             {
                 busy = false;
@@ -1224,14 +1225,20 @@ namespace OverFieldLocal
                 Append(Loc.S("已导入 UID ")+uid+Loc.S(" 的资料。原数据已有备份，其他 UID 保留。"));
                 Append(Loc.S("导入报告位于数据目录 accounts\\")+uid+"\\import-report.json。");
             }
-            catch(Exception e) { Append(Loc.S("导入未完成：")+e.Message); }
+            catch(Exception e) { Append(Loc.S("导入未完成：")+Friendly.Describe(e,"导入存档")); }
             finally { SetBusy(false,""); }
             if(!closing) await RefreshStatus();
         }
         void OpenFolder(string path)
         {
             try { Directory.CreateDirectory(path); Process.Start(new ProcessStartInfo("explorer.exe", Backend.Quote(path)) { UseShellExecute = true }); }
-            catch (Exception e) { Append(Loc.S("无法打开文件夹：") + e.Message); }
+            catch (Exception e) { Append(Loc.S("无法打开文件夹：") + Friendly.Describe(e,"打开文件夹")); }
+        }
+        void ReportError(string action, Exception error, bool showHint)
+        {
+            string friendly = Friendly.Describe(error, action);
+            Append(friendly + "  " + Loc.S("详细原因：") + Friendly.Detail(error));
+            if (showHint && !closing) captureHint.Text = friendly;
         }
         void Append(string message)
         {
@@ -1280,10 +1287,9 @@ namespace OverFieldLocal
                 if (closing) return;
                 lastStatus=null;
                 server.UpdateState(false, Loc.S("无法检查，请查看运行记录")); gateway.UpdateState(false, Loc.S("等待检查")); proxy.UpdateState(false, Loc.S("等待检查"));
-                badge.Text = Loc.S("需要检查配置"); badge.ForeColor = Color.FromArgb(244, 181, 125);
-                start.Text=StartButtonText(backend.Mode,null); browse.Enabled = true;
-                uidBox.Enabled=false; hostBox.Enabled=false; roomsButton.Enabled=false; firewall.Enabled=false;
-                if (lastStatusError != e.Message) Append(Loc.S("状态检查失败：") + e.Message); lastStatusError = e.Message;
+                badge.Text = Loc.S("需要检查配置"); badge.ForeColor = Color.FromArgb(244, 181, 125); browse.Enabled = true;
+                string friendly=Friendly.Describe(e,"检查服务状态");
+                if (lastStatusError != friendly) Append(Loc.S("状态检查失败：") + friendly); lastStatusError = friendly;
             }
             finally { checking = false; }
         }
@@ -1337,8 +1343,8 @@ namespace OverFieldLocal
                 Append(message);
                 if(action=="Start" && launch && status.ClientRunning) await Task.Run(() => backend.FocusClient());
             }
-            catch (OperationCanceledException) { if(!closing) { badge.Text=Loc.S("操作已取消");badge.ForeColor=Color.FromArgb(244,181,125);Append(Loc.S("操作已取消。已启动的服务会保留，请查看状态后重试。")); } }
-            catch (Exception e) { if(!closing) { badge.Text=Loc.S("操作失败");badge.ForeColor=Color.FromArgb(244,181,125);Append(Loc.S("操作失败：") + e.Message); } }
+            catch (OperationCanceledException) { Append(Loc.S("操作已取消。已启动的服务会保留，请查看状态后重试。")); }
+            catch (Exception e) { Append(Loc.S("操作失败：") + Friendly.Describe(e, action == "Stop" ? "停止服务" : "启动服务")); }
             finally
             {
                 if (operationCancellation != null) { operationCancellation.Dispose(); operationCancellation = null; }
@@ -1349,20 +1355,11 @@ namespace OverFieldLocal
         }
         async void BrowseRoot(object sender, EventArgs e)
         {
-            if (busy || closing) return;
-            busy=true; SetBusy(true,Loc.S("正在检查游戏目录"));
-            try
-            {
-                string selected;
-                using (var dialog = new FolderBrowserDialog { Description = Loc.S("选择游戏安装目录，单机启动时使用其中的 launcher.exe"), SelectedPath = backend.Root, ShowNewFolderButton = false })
-                { if(dialog.ShowDialog(this)!=DialogResult.OK) return; selected=dialog.SelectedPath; }
-                await Task.Run(() => { backend.ValidateRoot(selected); if(Backend.FindClient(selected)==null) throw new InvalidOperationException(Loc.S("所选目录里没有找到游戏客户端 launcher.exe。\n请选择包含 OverField Game 或 launcher.exe 的目录。")); });
-                if(closing)return;
-                backend.Root=selected; backend.Save(); rootPath.Text=backend.Root; Append(Loc.S("游戏目录已保存。"));
-            }
-            catch (Exception ex) { if(!closing) { Append(ex.Message); MessageBox.Show(this,ex.Message,Loc.S("目录不可用"),MessageBoxButtons.OK,MessageBoxIcon.Warning); } }
-            finally { busy=false; SetBusy(false,""); }
-            if(!closing) await RefreshStatus();
+            if (busy || checking) return;
+            using (var dialog = new FolderBrowserDialog { Description = Loc.S("选择游戏安装目录，单机启动时使用其中的 launcher.exe"), SelectedPath = backend.Root, ShowNewFolderButton = false })
+                if (dialog.ShowDialog(this) == DialogResult.OK)
+                    try { backend.ValidateRoot(dialog.SelectedPath); if (Backend.FindClient(dialog.SelectedPath) == null) throw new InvalidOperationException(Loc.S("所选目录里没有找到游戏客户端 launcher.exe。\n请选择包含 OverField Game 或 launcher.exe 的目录。")); backend.Root = dialog.SelectedPath; backend.Save(); rootPath.Text = backend.Root; Append(Loc.S("游戏目录已保存。")); await RefreshStatus(); }
+                    catch (Exception ex) { string friendly=Friendly.Describe(ex,"选择游戏目录"); Append(friendly+"  "+Loc.S("详细原因：")+Friendly.Detail(ex)); MessageBox.Show(this, friendly, Loc.S("目录不可用"), MessageBoxButtons.OK, MessageBoxIcon.Warning); }
         }
         async Task Verify()
         {
@@ -1377,7 +1374,7 @@ namespace OverFieldLocal
                 report["status"] = lastStatus; report["ready"] = lastStatus != null && lastStatus.Ready;
                 report["timestamp"] = DateTime.Now.ToString("o");
             }
-            catch (Exception e) { report["error"] = e.Message; }
+            catch (Exception e) { report["error"] = Friendly.Detail(e); }
             Directory.CreateDirectory(Path.Combine(backend.BaseDir, "runtime"));
             File.WriteAllText(Path.Combine(backend.BaseDir, "runtime", "launcher-verification.json"), new JavaScriptSerializer().Serialize(report), new UTF8Encoding(false));
             if (smokePath == null) Close();

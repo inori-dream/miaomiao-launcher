@@ -32,7 +32,7 @@ ALLOWED = {
     'docs/login-and-data.md', 'docs/release-audit.md', 'docs/channel-login.md', 'preflight.py',
     'backup-tool/1_backup_account.cmd', 'backup-tool/2_backup_gardens.cmd',
     'backup-tool/3_decode_pcap.cmd', 'backup-tool/capture.ps1',
-    'backup-tool/parse_pcap.py', 'backup-tool/extract_gardens.py', 'backup-tool/collector_preflight.py', 'backup-tool/exploration.py', 'backup-tool/exploration_catalog.json', 'backup-tool/test_exploration_integration.py',
+    'backup-tool/parse_pcap.py', 'backup-tool/extract_gardens.py', 'backup-tool/collector_preflight.py', 'backup-tool/exploration.py', 'backup-tool/exploration_catalog.json', 'backup-tool/test_exploration_integration.py', 'backup-tool/test_tcp_gap.py', 'backup-tool/test_scene_backup.py',
     'backup-tool/README.md', 'backup-tool/requirements.txt',
     'backup-tool/THIRD-PARTY.txt', 'backup-tool/使用说明.txt',
     'backup-tool/VERSION', 'backup-tool/RELEASE-NOTES.txt', 'backup-tool/pcap_compat.py',
@@ -43,6 +43,15 @@ ALLOWED = {
     'backup-tool/proto_gen/net_pb2.py',
     'backup-tool/proto_gen/Lolo-LICENSE.txt',
     'backup-tool/proto_gen/of-ps-LICENSE.txt',
+}
+# 上游新增的自动更新与错误文案文件
+ALLOWED |= {
+    'Friendly.cs', 'UpdaterUI.cs', 'launcher_updater.py', 'update_apply.py',
+    'update_policy.py', 'update_trust.py', 'build_update_assets.py',
+    'test_friendly_errors.py', 'test_signed_updater_download.py',
+    'test_update_apply.py', 'test_updater_gui_contract.py',
+    'test_gateway_forwarding.py', 'docs/auto-update.md',
+    'docs/login-empty-name.md', 'docs/channel-switch.md',
 }
 GENERATED = {'OverFieldLauncher.exe', 'OverFieldLauncher-EN.exe', 'LocalUidSDK.dll', 'LocalUidSDK.obj',
              'LocalUidSDK.lib', 'LocalUidSDK.exp'}

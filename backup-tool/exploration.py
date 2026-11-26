@@ -65,7 +65,11 @@ class Exploration:
         elif name == "SceneDataNotice":
             scene = data.data
             # Visiting another player's garden is not account exploration.
-            if scene.scene_id == 9999 or scene.HasField("scene_garden_data"):
+            # The official server also attaches an EMPTY scene_garden_data to
+            # ordinary open-world snapshots, so presence alone is not enough.
+            carried_layout = (scene.HasField("scene_garden_data")
+                              and scene.scene_garden_data.ByteSize() > 0)
+            if scene.scene_id == 9999 or carried_layout:
                 return
             if scene.scene_id:
                 self.scenes.add(scene.scene_id)

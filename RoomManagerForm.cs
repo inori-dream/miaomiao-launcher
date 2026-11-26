@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
@@ -45,7 +45,7 @@ namespace OverFieldLocal
         void AddButton(Control parent,string text,Func<Task> callback)
         {
             var button=new ActionButton(text) { Dock=DockStyle.None,Width=142,Height=46,Margin=new Padding(0,0,12,0),Font=Theme.Font(10,FontStyle.Bold) };
-            button.Click+=async delegate { try { await callback(); } catch(Exception e) { if(!closed)status.Text=e.Message; } };actions.Add(button);parent.Controls.Add(button);
+            button.Click+=async delegate { try { await callback(); } catch(Exception e) { if(!closed)status.Text=Friendly.Describe(e,"管理房间"); } };actions.Add(button);parent.Controls.Add(button);
         }
         uint Selected(DataGridView grid)
         {
@@ -73,7 +73,7 @@ namespace OverFieldLocal
                 players.Rows.Clear();foreach(var value in (System.Collections.IEnumerable)data["players"]) { var player=(Dictionary<string,object>)value;int row=players.Rows.Add(player["uid"],player["name"],player["ip"],player["room"],player["scene"],Convert.ToBoolean(player["ready"])?Loc.S("在线"):Loc.S("登录中"));if(selectedUid!=null && Convert.ToUInt32(selectedUid)==Convert.ToUInt32(player["uid"]))players.Rows[row].Selected=true; }
                 status.Text=Loc.S("在线玩家 ")+data["online"]+"    ·    "+DateTime.Now.ToString("HH:mm:ss")+Loc.S(" 更新");
             }
-            catch(Exception e) { if(!closed)status.Text=Loc.S("无法完成操作：")+e.Message; }
+            catch(Exception e) { if(!closed)status.Text=Loc.S("无法完成操作：")+Friendly.Describe(e,"管理房间"); }
             finally { loading=false;if(!closed)foreach(var button in actions)button.Enabled=true; }
         }
         async Task RoomAction(string action) { await Execute(new Dictionary<string,object>{{"action",action},{"room",Selected(rooms)}}); }

@@ -178,7 +178,12 @@ namespace OverFieldLocal
             var logHead=Grid(2,1);logHead.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));logHead.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,160));logHead.Controls.Add(FitLabel(Loc.S("运行记录"),10,Theme.Text,FontStyle.Bold),0,0);
             var openLogs=new LinkLabel{Text=Loc.S("打开日志文件夹"),LinkColor=Theme.Muted,ActiveLinkColor=Theme.Accent,VisitedLinkColor=Theme.Muted,Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleRight,AutoSize=false};openLogs.LinkClicked+=delegate{OpenFolder(Path.Combine(backend.ProfilePath,"logs"));};logHead.Controls.Add(openLogs,1,0);logRows.Controls.Add(logHead,0,0);
             logs.Dock=DockStyle.Fill;logs.ReadOnly=true;logs.BackColor=Theme.Panel;logs.ForeColor=Theme.Muted;logs.BorderStyle=BorderStyle.None;logs.Font=Theme.Font(9);logs.DetectUrls=false;logs.ScrollBars=RichTextBoxScrollBars.Vertical;logs.Margin=new Padding(0,4,0,0);logRows.Controls.Add(logs,0,1);layout.Controls.Add(logPanel,0,6);
-            footer.Text=Loc.S("游戏与服务独立运行  ·  单机 / 联机存档分开保存");footer.ForeColor=Theme.Muted;footer.Font=Theme.Font(8.5f);footer.Dock=DockStyle.Fill;footer.AutoEllipsis=true;footer.TextAlign=ContentAlignment.BottomLeft;footer.Margin=Padding.Empty;layout.Controls.Add(footer,0,7);
+            // A compact persistent strip, not a fifth navigation item. It stays visible on capture pages too.
+            var bottom=Grid(1,2);bottom.Dock=DockStyle.Bottom;bottom.Height=82;bottom.Padding=new Padding(26,4,26,4);
+            bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));bottom.RowStyles.Add(new RowStyle(SizeType.Absolute,48));bottom.RowStyles.Add(new RowStyle(SizeType.Absolute,26));
+            bottom.Controls.Add(BuildUpdaterStrip(),0,0);
+            footer.Text=Loc.S("游戏与服务独立运行  ·  单机 / 联机存档分开保存");footer.ForeColor=Theme.Muted;footer.Font=Theme.Font(8.5f);footer.Dock=DockStyle.Fill;footer.AutoEllipsis=true;footer.TextAlign=ContentAlignment.BottomLeft;footer.Margin=Padding.Empty;bottom.Controls.Add(footer,0,1);
+            Controls.Add(bottom);bottom.BringToFront();
         }
     }
 }

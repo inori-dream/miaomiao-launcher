@@ -297,8 +297,17 @@ def result_from_export(export: Path, session: Path):
             if report_path.resolve().parent != export.resolve():
                 raise ValueError("探索报告不能链接到输出目录之外。")
             result["explorationReport"] = str(report_path)
+    scenes = summary.get("my_scenes")
+    if isinstance(scenes, dict):
+        # Only the account's own channel is archived; bounded for GUI IPC.
+        result["myScenes"] = {"sceneCount": int(scenes.get("scene_count") or 0),
+                              "scenes": [int(value) for value in scenes.get("scenes") or []
+                                         if isinstance(value, int)],
+                              "zipFile": str(scenes.get("zip_file") or "")}
     result["quality"] = {key: summary[key] for key in (
-        "successful_decode_count", "trailing_bytes_count", "decode_fallback_count") if key in summary}
+        "successful_decode_count", "trailing_bytes_count", "tcp_gap_count",
+        "decode_fallback_count") if key in summary}
+    result["incompleteStreams"] = int(summary.get("tcp_gap_count") or 0)
     return result
 
 

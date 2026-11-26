@@ -88,7 +88,7 @@ class ExplorationTests(unittest.TestCase):
         c2s = frame(30001, p.GetCollectItemIdsRsp(status=1, item_ids=[99999998]).SerializeToString()) + frame(1001, b'SECRET')
         with tempfile.TemporaryDirectory(prefix='synthetic_', dir=Path(__file__).parent) as temp:
             out = Path(temp)
-            with patch.object(parser, 'prepare_capture', side_effect=lambda x: x), patch.object(parser, 'load_cmd_map', return_value=mapping), patch.object(parser, 'list_tcp_streams', return_value=[0]), patch.object(parser, 'extract_tcp_stream_directions', return_value=('client:4567', 'server:11003', c2s, payload)), contextlib.redirect_stdout(io.StringIO()):
+            with patch.object(parser, 'prepare_capture', side_effect=lambda x: x), patch.object(parser, 'load_cmd_map', return_value=mapping), patch.object(parser, 'list_tcp_streams', return_value=[0]), patch.object(parser, 'follow_tcp_stream', return_value=('client:4567', 'server:11003', c2s, payload, [])), contextlib.redirect_stdout(io.StringIO()):
                 parser.analyze_pcap(Path('synthetic.pcap'), out)
             summary = json.loads((out / 'summary.json').read_text(encoding='utf-8'))
             self.assertEqual(summary['exploration_report'], 'exploration.txt')
