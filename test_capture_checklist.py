@@ -30,6 +30,30 @@ class ChecklistTests(unittest.TestCase):
         self.event('PackNotice',{'items':[{'main_item':{'weapon':{'instance_id':42,'weapon_id':1},'armor':{'field_2':43}}}]})
         data=self.items(readable=True);self.assertEqual(data['weapon']['state'],'collected')
         self.assertEqual(data['armor']['state'],'waiting')
+    def test_bag_only_gear_warns_that_equipment_is_incomplete(self):
+        """PackNotice gear marks the group collected but is not the equipment list."""
+        self.event('PackNotice',{'items':[{'main_item':{
+            'weapon':{'instance_id':42,'weapon_id':1},
+            'armor':{'instance_id':43,'armor_id':2},
+            'poster':{'instance_id':44,'poster_id':3}}}]})
+        data=self.items(readable=True)
+        for group in ('weapon','armor','poster'):
+            self.assertEqual(data[group]['state'],'collected')
+        report=checklist.report(self.counts,self.empty,phase='complete',readable=True)
+        for name in ('GetWeaponRsp','GetArmorRsp','GetPosterRsp'):
+            self.assertIn(name,report['warning'])
+        self.assertIn('装备',report['warning'])
+    def test_authoritative_equipment_list_suppresses_the_warning(self):
+        self.event('PackNotice',{'items':[{'main_item':{'weapon':{'instance_id':42,'weapon_id':1}}}]})
+        self.event('GetWeaponRsp',{'weapons':[{'instance_id':42,'weapon_id':1}]})
+        self.event('GetArmorRsp',{'armors':[]})
+        self.event('GetPosterRsp',{'posters':[]})
+        report=checklist.report(self.counts,self.empty,phase='complete',readable=True)
+        self.assertEqual(report['warning'],'')
+    def test_no_gear_at_all_does_not_warn(self):
+        self.event('PlayerMainDataRsp',{'status':1,'player_id':7,'characters':[]})
+        report=checklist.report(self.counts,self.empty,phase='complete',readable=True)
+        self.assertEqual(report['warning'],'')
     def test_city_scene_does_not_count_as_home(self):
         self.event('SceneDataNotice',{'data':{'scene_id':1001}})
         self.assertEqual(self.items(readable=True)['garden']['state'],'waiting')

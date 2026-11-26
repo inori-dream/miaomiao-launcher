@@ -89,9 +89,29 @@ def report(counts=None, empty=None, *, phase='idle', readable=False, warning='',
         else:state='missing' if final and readable else 'waiting' if readable else 'unknown'
         items.append({'id':key,'label':label,'state':state,'status':STATES[state],
                       'count':count,'evidence':evidence,'hint':hint})
+    if not warning:
+        warning=equipment_warning(counts)
     return {'phase':phase,'readable':readable,'updatedAt':updated or dt.datetime.now().isoformat(timespec='seconds'),
             'warning':warning,'items':items,'counts':dict(counts),'emptyCounts':dict(empty),
             'livePackets':live_packets}
+
+
+def equipment_warning(counts):
+    """PackNotice gear is not the authoritative equipment list.
+
+    A character's equipment slots point at instance ids that only GetWeaponRsp /
+    GetArmorRsp / GetPosterRsp enumerate. Seeing gear in PackNotice marks the group
+    as collected, which reads as complete while most equipped instances are absent,
+    so say so explicitly before the player trusts the capture.
+    """
+    if not counts:return ''
+    missing=[]
+    for group,list_name in (('weapon','GetWeaponRsp'),('armor','GetArmorRsp'),('poster','GetPosterRsp')):
+        if counts.get('@'+group) and not counts.get(list_name):missing.append(list_name)
+    if not missing:return ''
+    return ('武器／护甲／海报只看到了背包快照，缺少 '+'、'.join(missing)+
+            ' 响应：角色装备栏引用的实例大多不在包里，导入后装备会不全。'
+            '请打开对应的装备界面翻页后再采集。')
 
 
 def final_report(export):
@@ -113,6 +133,8 @@ def final_report(export):
                 warnings.append('本次流量包含多个账号，清单仅表示本次见过这些响应；不能作为单账号完整备份，请按账号分别采集。')
             if metadata.get('tcp_gap_count') or metadata.get('trailing_bytes_count'):
                 warnings.append('检测到抓包缺口或未解码数据，备份可能不完整。')
+            gear=equipment_warning(counts)
+            if gear:warnings.append(gear)
             warning=' '.join(warnings)
         except (OSError,ValueError,TypeError):pass
     return report(counts,empty,phase='complete',readable=True,warning=warning)

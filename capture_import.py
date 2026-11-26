@@ -178,6 +178,52 @@ def capture_quality(main, entries):
             if isinstance(item, dict) and any(item.get(key) for key in ('base_item','weapon','armor','poster','outfit','inscription')): report['inventoryItems'] += 1
     report['incomplete'] = bool(report['placeholderFields'] or report['characterPlaceholderFields'])
     report['equipmentListsMissing'] = report['equipmentResponses'] == 0
+
+    # Characters reference equipped gear by instance id. When the capture never
+    # received GetWeaponRsp/GetArmorRsp/GetPosterRsp, those instances are absent from
+    # the item maps and the private server shows empty equipment slots. Counting the
+    # unresolvable references here turns a silent partial import into a reported one.
+    available = {'weapon': set(), 'armor': set(), 'poster': set()}
+    for kind, collection, bucket in (('GetWeaponRsp', 'weapons', 'weapon'),
+                                     ('GetArmorRsp', 'armors', 'armor'),
+                                     ('GetPosterRsp', 'posters', 'poster')):
+        for packet in entries.get(kind, []):
+            for captured in as_list((packet or {}).get(collection)):
+                if isinstance(captured, dict) and int(captured.get('instance_id') or 0) > 0:
+                    available[bucket].add(int(captured['instance_id']))
+    for packet in entries.get('PackNotice', []):
+        for detail in as_list((packet or {}).get('items')):
+            item = (detail or {}).get('main_item') if isinstance(detail, dict) else None
+            if not isinstance(item, dict):
+                continue
+            for key, bucket in (('weapon', 'weapon'), ('armor', 'armor'), ('poster', 'poster')):
+                value = item.get(key)
+                if isinstance(value, dict) and int(value.get('instance_id') or 0) > 0:
+                    available[bucket].add(int(value['instance_id']))
+
+    referenced = {'weapon': set(), 'armor': set(), 'poster': set()}
+    for captured in characters:
+        if not isinstance(captured, dict):
+            continue
+        for preset in as_list(captured.get('equipment_presets')):
+            if not isinstance(preset, dict):
+                continue
+            if int(preset.get('weapon') or 0) > 0:
+                referenced['weapon'].add(int(preset['weapon']))
+            for arm in as_list(preset.get('armors')):
+                if isinstance(arm, dict) and int(arm.get('armor_id') or 0) > 0:
+                    referenced['armor'].add(int(arm['armor_id']))
+            for pos in as_list(preset.get('posters')):
+                if isinstance(pos, dict) and int(pos.get('poster_id') or 0) > 0:
+                    referenced['poster'].add(int(pos['poster_id']))
+
+    report['equippedReferences'] = {key: len(value) for key, value in referenced.items()}
+    report['unresolvedEquipment'] = {
+        key: len(referenced[key] - available[key]) for key in referenced}
+    report['missingEquipmentLists'] = [
+        name for name, kind in (('GetWeaponRsp', 'weapon'), ('GetArmorRsp', 'armor'),
+                                ('GetPosterRsp', 'poster'))
+        if not entries.get(name)]
     return report
 
 
@@ -438,6 +484,19 @@ def import_capture(path, profile, expected_uid, replace=False, allow_incomplete=
                   restored=['basic','characters','equipment presets','outfits','team','inventory','weapons','armor','posters','inscriptions','gathering tools','world level'],
                   preservedOnly=['quest state','activities','other modules not persisted by this Lolo version'])
     if quality['skippedEntries']: result['skippedEntries'] = quality['skippedEntries']
+
+    # Tell the caller plainly when gear is missing, instead of implying a full import.
+    unresolved = quality.get('unresolvedEquipment') or {}
+    if any(unresolved.values()):
+        missing = quality.get('missingEquipmentLists') or []
+        result['equipmentWarning'] = (
+            '装备不完整：角色装备栏引用的实例有 ' + str(sum(unresolved.values())) +
+            ' 件没有出现在本次抓包里（武器 ' + str(unresolved.get('weapon', 0)) +
+            '、护甲 ' + str(unresolved.get('armor', 0)) +
+            '、海报 ' + str(unresolved.get('poster', 0)) + '）。'
+            + ('缺少 ' + '、'.join(missing) + ' 响应；' if missing else '')
+            + '请在公服里打开武器、护甲、海报界面并翻页，再重新采集。')
+
     write_json(directory / 'import-report.json', result)
     return result
 
