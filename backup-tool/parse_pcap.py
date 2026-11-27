@@ -332,6 +332,22 @@ def is_garden_scene(scene: net_pb2.SceneData) -> bool:
     return scene.HasField("scene_garden_data") and scene.scene_garden_data.ByteSize() > 0
 
 
+def collect_player_profile(name: str, body: dict, names: dict[int, str]) -> None:
+    """Resolve absent garden owners from successful profiles, by internal ID."""
+    if name != "OtherPlayerInfoRsp" or not isinstance(body, dict):
+        return
+    status = body.get("status")
+    if type(status) not in (int, str) or status not in (1, "StatusCode_OK"):
+        return
+    info = body.get("other_info")
+    if not isinstance(info, dict):
+        return
+    owner, nickname = info.get("player_id"), info.get("nick_name")
+    if (type(owner) is int and 0 < owner <= 0xffffffff
+            and isinstance(nickname, str) and nickname.strip() and len(nickname) <= 256):
+        names[owner] = nickname
+
+
 def collect_garden_scene(
     scene: net_pb2.SceneData,
     layouts: dict[int, net_pb2.SceneGardenData],
@@ -515,6 +531,7 @@ def analyze_pcap(pcap_path: Path, out_dir: Path) -> None:
     stream_summaries: List[dict] = []
     garden_layouts: dict[int, net_pb2.SceneGardenData] = {}
     player_names: dict[int, str] = {}
+    profile_names: dict[int, str] = {}
     garden_packets: dict[int, list[str]] = defaultdict(list)
     own_scenes: dict[int, list[net_pb2.SceneData]] = defaultdict(list)
 
@@ -635,6 +652,7 @@ def analyze_pcap(pcap_path: Path, out_dir: Path) -> None:
                     decoded_names_seen[msg_name] += 1
                     if dir_label == "s2c":
                         decoded_s2c_names_seen[msg_name] += 1
+                        collect_player_profile(msg_name, decoded, profile_names)
                         exploration.add(msg_name, body, {"stream_id": sid, "direction": dir_label,
                                                        "seq": global_seq, "packet_stem": stem})
                     (json_dir / f"{stem}.json").write_text(
@@ -676,7 +694,9 @@ def analyze_pcap(pcap_path: Path, out_dir: Path) -> None:
     separated = separate_garden_packets(out_dir, garden_packets, account_uid)
     if separated:
         garden_layouts.pop(account_uid, None)
-        write_garden_backups(out_dir / "gardens", garden_layouts, player_names, separated)
+        write_garden_backups(
+            out_dir / "gardens", garden_layouts, {**player_names, **profile_names}, separated
+        )
 
     exploration_summary = exploration.summary(player_uids)
     exploration_path = out_dir / "exploration.json"

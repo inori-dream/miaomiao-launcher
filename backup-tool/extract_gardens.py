@@ -24,7 +24,10 @@ from pcap_compat import prepare_capture  # noqa: E402
 from parse_pcap import (  # type: ignore  # noqa: E402
     SCENE_DATA_NOTICE_ID,
     collect_garden_scene,
+    collect_player_profile,
+    decode_proto_body,
     extract_tcp_stream_directions,
+    load_cmd_map,
     list_tcp_streams,
     parse_game_stream,
     write_garden_backups,
@@ -35,6 +38,7 @@ def extract_gardens(pcap_path: Path, out_dir: Path) -> None:
     pcap_path = prepare_capture(pcap_path)
     known_names: dict[int, str] = {}
     layouts: dict[int, net_pb2.SceneGardenData] = {}
+    cmd_map = load_cmd_map()
     streams = list_tcp_streams(pcap_path)
     print(f"[信息] 发现 {len(streams)} 条 TCP 流，正在扫描家园场景包 (SceneDataNotice / 1016)...")
 
@@ -45,7 +49,15 @@ def extract_gardens(pcap_path: Path, out_dir: Path) -> None:
                 continue
             pkts, _ = parse_game_stream(payload)
             for pkt in pkts:
-                if pkt["msg_id"] != SCENE_DATA_NOTICE_ID or pkt["decompress_err"]:
+                if pkt["decompress_err"]:
+                    continue
+                name = cmd_map.get(pkt["msg_id"])
+                if name == "OtherPlayerInfoRsp":
+                    decoded, error = decode_proto_body(name, pkt["body"])
+                    if not error:
+                        collect_player_profile(name, decoded, known_names)
+                    continue
+                if pkt["msg_id"] != SCENE_DATA_NOTICE_ID:
                     continue
                 try:
                     scene = net_pb2.SceneDataNotice.FromString(pkt["body"]).data
