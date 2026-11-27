@@ -160,11 +160,15 @@ class LauncherGuiStateTests(unittest.TestCase):
         cls.assemblies = {}
         for edition, defines in (('CN', []), ('EN', ['/define:ENGLISH'])):
             output = cls.root / f'LauncherState{edition}.exe'
+            # Keep this list in step with build_launcher.ps1: a launcher built from a
+            # subset fails to compile as soon as Launcher.cs references a sibling
+            # source, which silently reduced this suite to zero executed tests.
             command = [str(csc), '/nologo', '/target:winexe', '/codepage:65001', '/warnaserror+',
                        '/reference:System.Windows.Forms.dll', '/reference:System.Drawing.dll',
                        '/reference:System.Web.Extensions.dll', *defines, f'/out:{output}',
-                       str(ROOT / 'Launcher.cs'), str(ROOT / 'SeasideUI.cs'),
-                       str(ROOT / 'RoomManagerForm.cs'), str(ROOT / 'Strings.cs')]
+                       str(ROOT / 'Launcher.cs'), str(ROOT / 'Friendly.cs'),
+                       str(ROOT / 'SeasideUI.cs'), str(ROOT / 'RoomManagerForm.cs'),
+                       str(ROOT / 'Strings.cs'), str(ROOT / 'UpdaterUI.cs')]
             result = subprocess.run(command, capture_output=True, timeout=30)
             if result.returncode:
                 raise RuntimeError(result.stdout.decode('utf-8', errors='replace') +
@@ -205,6 +209,27 @@ class LauncherGuiStateTests(unittest.TestCase):
         self.assertNotIn('while (checking', source)
         self.assertIn('operationCancellable && operationCancellation != null', source)
         self.assertIn('captureStartInFlight = true', source)
+
+    def test_only_the_cleanup_path_cancels_its_close(self):
+        """An update handoff must be able to close the form, or the helper never starts."""
+        source = (ROOT / 'Launcher.cs').read_text(encoding='utf-8-sig')
+        closing = source.split('FormClosing += async delegate', 1)[1].split('void ConfigureAccessibility', 1)[0]
+        self.assertIn('bool needsCleanup', closing)
+        # Cancel must be conditional, and it must happen after the guard is computed.
+        cancel_at = closing.index('e.Cancel = true')
+        guard_at = closing.index('bool needsCleanup')
+        self.assertGreater(cancel_at, guard_at)
+        self.assertIn('!updaterHandoff', closing)
+        self.assertIn('e.CloseReason != CloseReason.WindowsShutDown', closing)
+        # The early return keeps every non-cleanup reason on the default close path.
+        self.assertRegex(closing, r'if \(!needsCleanup\) return;')
+
+    def test_capture_state_refresh_releases_its_guard(self):
+        """A latched guard would let the capture state be read once, ever."""
+        source = (ROOT / 'Launcher.cs').read_text(encoding='utf-8-sig')
+        refresh = source.split('async Task RefreshCaptureState()', 1)[1].split('internal void ApplyCaptureState', 1)[0]
+        self.assertIn('checkingCaptureState=true', refresh)
+        self.assertIn('finally { checkingCaptureState=false; }', refresh)
 
 
 if __name__ == '__main__':

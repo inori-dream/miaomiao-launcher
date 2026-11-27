@@ -337,27 +337,45 @@ function Client-Running {
     return @(Get-Process -Name 'launcher' -ErrorAction SilentlyContinue | Where-Object { $_.Path -and [string]::Equals($_.Path,$taskClient,[StringComparison]::OrdinalIgnoreCase) }).Count -gt 0
 }
 function Stop-Orphans {
-    # Helper ownership requires the exact repository command line plus a live
-    # PID+path+start-time record. Command-line-only termination is not allowed.
+    # Ownership comes from a record written when the helper was started. Matching a
+    # command line proves what a process is, not who started it, so a candidate
+    # without a record is reported and left running: it may be the user's own
+    # capture_checklist run.
     $stopped = @()
     $taskErrors=@()
-    $taskPktMon=Join-Path $env:SystemRoot 'System32\PktMon.exe'
-    $candidates = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-        $command = $_.CommandLine
-        if ([string]::IsNullOrWhiteSpace($command)) { return $false }
-        ($_.Name -eq 'python.exe' -and $taskPython -and $command -like "*$PSScriptRoot*capture_checklist.py*" -and $command -like '* watch *') -or
-        ($_.Name -eq 'PktMon.exe' -and $command -like '*live-progress*snapshot*')
-    })
-    foreach ($candidate in $candidates) {
-        $taskExpected=if ($candidate.Name -eq 'python.exe') { $taskPython } else { $taskPktMon }
+    $taskUnverified=@()
+    $taskSessions=Join-Path $PSScriptRoot 'runtime\capture-sessions'
+    if (-not (Test-Path -LiteralPath $taskSessions)) { return $stopped }
+    $taskRecords=@(Get-ChildItem -LiteralPath $taskSessions -Filter 'helper-record.json' -File -Recurse -ErrorAction SilentlyContinue)
+    foreach ($taskFile in $taskRecords) {
         try {
-            $taskProcess=Get-Process -Id $candidate.ProcessId -ErrorAction Stop
-            $taskRecord=[pscustomobject]@{
-                Id=[int]$candidate.ProcessId; Path=$taskProcess.Path; Started=$taskProcess.StartTime.ToUniversalTime().ToString('o'); Owned=$true
+            $taskRecord=Read-LaunchRecord $taskFile.FullName
+            # The recorded helper must have been started by this installation's
+            # Python; anything else is a tampered or stale record.
+            if (-not (Process-Matches $taskRecord $taskRecord.Path)) {
+                [IO.File]::Delete($taskFile.FullName)
+                continue
             }
-            Stop-Recorded $taskRecord $taskExpected
-            $stopped += $candidate.ProcessId
-        } catch { $taskErrors+="helper $($candidate.ProcessId): $($_.Exception.Message)" }
+            Stop-Recorded $taskRecord $taskRecord.Path
+            $stopped += [int]$taskRecord.Id
+            [IO.File]::Delete($taskFile.FullName)
+        } catch { $taskErrors+="helper record $($taskFile.FullName): $($_.Exception.Message)" }
+    }
+    # Report, never terminate, helpers that have no record.
+    try {
+        foreach ($taskCandidate in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+            $taskCommand = $_.CommandLine
+            if ([string]::IsNullOrWhiteSpace($taskCommand)) { return $false }
+            # A helper this pass just stopped must not be reported as unowned.
+            if ([int]$_.ProcessId -in $stopped) { return $false }
+            ($_.Name -eq 'python.exe' -and $taskCommand -like "*$PSScriptRoot*capture_checklist.py*" -and $taskCommand -like '* watch *') -or
+            ($_.Name -eq 'PktMon.exe' -and $taskCommand -like '*live-progress*snapshot*')
+        })) {
+            $taskUnverified += [int]$taskCandidate.ProcessId
+        }
+    } catch { }
+    if ($taskUnverified.Count -gt 0) {
+        Write-Output ("Left {0} helper process(es) running because no ownership record exists: {1}" -f $taskUnverified.Count, ($taskUnverified -join ', '))
     }
     if ($taskErrors.Count -gt 0) {
         Write-LifecycleEvidence 'Cleanup' ($taskErrors -join '; ') $null

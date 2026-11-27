@@ -832,25 +832,31 @@ namespace OverFieldLocal
             FormClosing += async delegate(object sender, FormClosingEventArgs e)
             {
                 if (closing) return;
-                closing = true; e.Cancel = true;
+                closing = true;
                 timer.Stop(); timer.Dispose();
                 captureProgressTimer.Stop(); captureProgressTimer.Dispose();
                 backend.CancelAll();
                 // Detached services would otherwise survive this process and keep
                 // holding 18080/18100. Reap only what this launcher started.
-                if (!updaterHandoff && !uiPreview && smokePath == null && e.CloseReason != CloseReason.WindowsShutDown)
-                {
-                    Enabled = false;
-                    backend.StopCaptureQuietly();
-                    // Cleanup runs off the UI thread and has a hard close deadline.
-                    // A stuck controller must not freeze the window or block shutdown.
-                    var shutdownDeadline = new System.Windows.Forms.Timer { Interval = 3000 };
-                    shutdownDeadline.Tick += delegate { shutdownDeadline.Dispose(); Environment.Exit(0); };
-                    shutdownDeadline.Start();
-                    try { await Task.Run(() => backend.Cleanup()); }
-                    catch { }
-                    finally { shutdownDeadline.Dispose(); Environment.Exit(0); }
-                }
+                //
+                // Only the asynchronous cleanup path may cancel the close. Every
+                // other reason must let the form close: the update handoff relies on
+                // this process exiting so the waiting helper can take over, a Windows
+                // shutdown must not be blocked, and the smoke run has to return.
+                bool needsCleanup = !updaterHandoff && !uiPreview && smokePath == null
+                    && e.CloseReason != CloseReason.WindowsShutDown;
+                if (!needsCleanup) return;
+                e.Cancel = true;
+                Enabled = false;
+                backend.StopCaptureQuietly();
+                // Cleanup runs off the UI thread and has a hard close deadline.
+                // A stuck controller must not freeze the window or block shutdown.
+                var shutdownDeadline = new System.Windows.Forms.Timer { Interval = 3000 };
+                shutdownDeadline.Tick += delegate { shutdownDeadline.Dispose(); Environment.Exit(0); };
+                shutdownDeadline.Start();
+                try { await Task.Run(() => backend.Cleanup()); }
+                catch { }
+                finally { shutdownDeadline.Dispose(); Environment.Exit(0); }
             };
             InitializeUpdater(args);
         }
@@ -1098,6 +1104,9 @@ namespace OverFieldLocal
                 ApplyCaptureState(state);
             }
             catch(Exception error) { if(!closing) Append(Loc.S("采集状态检查失败：")+Friendly.Describe(error,"采集状态检查")); }
+            // Must always release the guard: without this the first refresh (or the
+            // first failure) latches the flag and no later state change can refresh.
+            finally { checkingCaptureState=false; }
         }
         internal void ApplyCaptureState(Dictionary<string,object> state)
         {
