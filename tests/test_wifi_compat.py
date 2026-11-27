@@ -1,11 +1,11 @@
-"""Upstream 1.0.9 Wi-Fi compatibility regression fixtures; no real user packets."""
+﻿"""Upstream 1.0.9 Wi-Fi compatibility regression fixtures; no real user packets."""
 import hashlib
 from pathlib import Path
 import struct
 import sys
 import tempfile
 import unittest
-sys.path.insert(0,str(Path(__file__).resolve().parent/'backup-tool'))
+sys.path.insert(0,str(Path(__file__).resolve().parent.parent / 'backup-tool'))
 from pcap_compat import prepare_capture
 
 

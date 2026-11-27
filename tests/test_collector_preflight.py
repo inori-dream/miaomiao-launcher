@@ -1,4 +1,4 @@
-"""Read-only preflight contract tests; native calls mocked, no real capture."""
+﻿"""Read-only preflight contract tests; native calls mocked, no real capture."""
 import importlib.util
 from pathlib import Path
 import subprocess
@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).resolve().parent.parent
 spec = importlib.util.spec_from_file_location("collector_preflight", ROOT / "backup-tool/collector_preflight.py")
 preflight = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(preflight)

@@ -1,8 +1,11 @@
-"""Synthetic account-ZIP delivery tests: no actual user captures or databases."""
+﻿"""Synthetic account-ZIP delivery tests: no actual user captures or databases."""
 import hashlib, tempfile, unittest, warnings, zipfile
 from pathlib import Path
 import capture_zip, capture_import
 from test_official_import import make_zip, main_data
+import sys
+# SIBLING_TESTS: this suite imports sibling test modules by name.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 class CaptureZipTests(unittest.TestCase):
     def setUp(self):

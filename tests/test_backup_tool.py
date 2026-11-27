@@ -1,4 +1,4 @@
-"""Synthetic backup tests: no live capture, account login or network access."""
+﻿"""Synthetic backup tests: no live capture, account login or network access."""
 from pathlib import Path
 import contextlib
 import io
@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 from zipfile import ZipFile
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'backup-tool'))
 import parse_pcap as parser
 import extract_gardens as gardens

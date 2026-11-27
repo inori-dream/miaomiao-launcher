@@ -1,4 +1,4 @@
-"""Controller integration regressions; native calls mocked, no real capture."""
+﻿"""Controller integration regressions; native calls mocked, no real capture."""
 import json
 from pathlib import Path
 import tempfile
@@ -8,6 +8,9 @@ from unittest.mock import Mock,patch
 import official_capture as capture
 import official_launcher
 from test_official_import import make_zip,main_data
+import sys
+# SIBLING_TESTS: this suite imports sibling test modules by name.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
 class CollectorIntegrationTests(unittest.TestCase):

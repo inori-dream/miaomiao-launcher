@@ -1,4 +1,4 @@
-import contextlib
+﻿import contextlib
 import io
 import json
 from pathlib import Path
@@ -150,7 +150,7 @@ class DataAndUidTests(unittest.TestCase):
         callback_type=ctypes.CFUNCTYPE(None,ctypes.c_char_p,ctypes.c_int);messages=[]
         callback=callback_type(lambda data,length:messages.append(json.loads(ctypes.string_at(data,length))))
         try:
-            library=ctypes.CDLL(str(Path(__file__).with_name('LocalUidSDK.dll')))
+            library=ctypes.CDLL(str(Path(__file__).resolve().parent.parent / 'LocalUidSDK.dll'))
             library.SDKInit.argtypes=[ctypes.c_char_p,ctypes.c_void_p,ctypes.c_int,ctypes.c_int,callback_type]
             library.SDKLogin.argtypes=[callback_type]
             self.assertEqual(library.SDKInit(b'{}',None,0,1,callback),0)

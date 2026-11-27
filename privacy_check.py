@@ -1,24 +1,24 @@
-"""Conservative release-tree check; not a substitute for manual secret review."""
+﻿"""Conservative release-tree check; not a substitute for manual secret review."""
 from pathlib import Path
 import re
 import sys
 
 ROOT = Path(__file__).resolve().parent
 ALLOWED = {
-    'Launcher.cs', 'Friendly.cs', 'SeasideUI.cs', 'RoomManagerForm.cs', 'Strings.cs', 'test_friendly_errors.py', 'test_editions.py', 'docs/editions.md', 'launcher.manifest', 'launcher.ico',
-    'build_launcher.ps1', 'test_pcap_streaming.py', 'test_capture_modes.py', 'test_collector_preflight.py', 'test_collector_integration.py', 'test_collector_gui_contract.py', 'LocalUidSDK.cpp', 'sdk.def', 'build_sdk.cmd',
-    'World-Control.ps1', 'Lan-Firewall.ps1', 'profile_manager.py', 'UpdaterUI.cs', 'launcher_updater.py', 'update_apply.py', 'update_policy.py', 'update_trust.py', 'build_update_assets.py', 'test_signed_updater_download.py', 'test_update_apply.py', 'test_updater_gui_contract.py', 'docs/auto-update.md',
-    'capture_import.py', 'room_gateway.py', 'test_gateway_forwarding.py', 'docs/login-empty-name.md', 'docs/channel-switch.md', 'proto_fields.json',
+    'Launcher.cs', 'Friendly.cs', 'SeasideUI.cs', 'RoomManagerForm.cs', 'Strings.cs', 'tests/test_friendly_errors.py', 'tests/test_editions.py', 'docs/editions.md', 'launcher.manifest', 'launcher.ico',
+    'build_launcher.ps1', 'tests/test_pcap_streaming.py', 'tests/test_capture_modes.py', 'tests/test_collector_preflight.py', 'tests/test_collector_integration.py', 'tests/test_collector_gui_contract.py', 'LocalUidSDK.cpp', 'sdk.def', 'build_sdk.cmd',
+    'World-Control.ps1', 'Lan-Firewall.ps1', 'profile_manager.py', 'UpdaterUI.cs', 'launcher_updater.py', 'update_apply.py', 'update_policy.py', 'update_trust.py', 'build_update_assets.py', 'tests/test_signed_updater_download.py', 'tests/test_update_apply.py', 'tests/test_updater_gui_contract.py', 'docs/auto-update.md',
+    'capture_import.py', 'room_gateway.py', 'tests/test_gateway_forwarding.py', 'docs/login-empty-name.md', 'docs/channel-switch.md', 'proto_fields.json',
     'model_schema.json', 'service_runner.py', 'make_junction.ps1',
-    'repair_version.py', 'lolo_redirect.py', 'test_launcher.py',
+    'repair_version.py', 'lolo_redirect.py', 'tests/test_launcher.py',
     'README.md', 'requirements.txt', '.gitignore', 'privacy_check.py',
-    'RELEASE-CHECKLIST.md', 'RELEASE-NOTES.md', 'test_backup_tool.py',
-    'official_capture.py', 'official_import.py', 'test_official_import.py',
-    'capture_checklist.py', 'test_capture_checklist.py', 'test_wifi_compat.py',
-    'official_launcher.py', 'test_official_launcher.py', 'test_pktmon_encoding.py',
-    'capture_zip.py', 'test_capture_zip.py', 'test_capture_completion.py', 'test_import_robust.py', 'schema_restore.py', 'test_bool_fields.py', 'repair_fashion_rows.py',
+    'RELEASE-CHECKLIST.md', 'RELEASE-NOTES.md', 'tests/test_backup_tool.py',
+    'official_capture.py', 'official_import.py', 'tests/test_official_import.py',
+    'capture_checklist.py', 'tests/test_capture_checklist.py', 'tests/test_wifi_compat.py',
+    'official_launcher.py', 'tests/test_official_launcher.py', 'tests/test_pktmon_encoding.py',
+    'capture_zip.py', 'tests/test_capture_zip.py', 'tests/test_capture_completion.py', 'tests/test_import_robust.py', 'schema_restore.py', 'tests/test_bool_fields.py', 'repair_fashion_rows.py',
     'docs/official-capture.md', 'docs/taptap-private.md', 'docs/international-error-overlay.md', 'docs/android-backup.md', 'docs/collector-1012.md',
-    'client_identity.py', 'taptap_private_runner.py', 'taptap_private_agent.js', 'test_taptap_private.py',
+    'client_identity.py', 'taptap_private_runner.py', 'taptap_private_agent.js', 'tests/test_taptap_private.py',
     'docs/login-and-data.md', 'docs/release-audit.md', 'docs/channel-login.md', 'preflight.py',
     'backup-tool/1_backup_account.cmd', 'backup-tool/2_backup_gardens.cmd',
     'backup-tool/3_decode_pcap.cmd', 'backup-tool/capture.ps1',

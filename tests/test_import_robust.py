@@ -8,8 +8,10 @@ import zipfile
 from contextlib import closing
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent
+REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
+# SIBLING_TESTS: this suite imports sibling test modules by name.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import capture_import
 from test_official_import import make_database

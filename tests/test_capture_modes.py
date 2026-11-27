@@ -1,4 +1,4 @@
-"""Execute the real capture control branch with mocked PktMon, without elevation."""
+﻿"""Execute the real capture control branch with mocked PktMon, without elevation."""
 import json
 import os
 from pathlib import Path
@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 import unittest
 
-ROOT=Path(__file__).parent
+ROOT = Path(__file__).resolve().parent.parent
 HARNESS=r'''
 param([string]$CaptureScript,[string]$Root,[string]$Scenario)
 $ErrorActionPreference='Stop'

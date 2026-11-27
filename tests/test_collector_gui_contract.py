@@ -1,11 +1,11 @@
-"""Exercise compiled GUI helper methods without UI, elevation or real capture."""
+﻿"""Exercise compiled GUI helper methods without UI, elevation or real capture."""
 import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
 
-ROOT=Path(__file__).parent
+ROOT = Path(__file__).resolve().parent.parent
 HARNESS=r'''
 using System;
 using System.Collections.Generic;

@@ -1,8 +1,8 @@
-"""Native UTF-8 fixture tests under GBK PowerShell 5.1, without using real PktMon."""
+﻿"""Native UTF-8 fixture tests under GBK PowerShell 5.1, without using real PktMon."""
 import os, subprocess, tempfile, unittest
 from pathlib import Path
 
-ROOT=Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 CS=r'''
 using System; using System.IO; using System.Text;
 class FakePktMon {

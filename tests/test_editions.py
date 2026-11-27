@@ -1,4 +1,4 @@
-"""Regression checks for independently packaged CN and Steam editions."""
+﻿"""Regression checks for independently packaged CN and Steam editions."""
 from contextlib import closing
 import json
 import sqlite3
@@ -37,7 +37,7 @@ class EditionTests(unittest.TestCase):
                 self.assertEqual(con.execute('SELECT COUNT(*) FROM of_user').fetchone()[0], 0)
 
     def test_controller_scopes_state_lock_and_client(self):
-        code = Path(__file__).with_name('World-Control.ps1').read_text(encoding='utf-8-sig')
+        code = (Path(__file__).resolve().parent.parent / 'World-Control.ps1').read_text(encoding='utf-8-sig')
         self.assertIn('world-state-$Mode.json', code)
         self.assertIn('OverFieldWorldControl-$Mode', code)
         self.assertIn('if ($taskRead.Mode -ne $Mode) { return $null }', code)

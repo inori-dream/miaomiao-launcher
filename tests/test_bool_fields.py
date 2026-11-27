@@ -8,7 +8,9 @@ from contextlib import closing
 from pathlib import Path
 import tempfile
 
-REPO = Path(__file__).resolve().parent
+REPO = Path(__file__).resolve().parent.parent
+# The suite imports sibling test modules, so tests/ must be importable.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(REPO))
 
 import capture_import

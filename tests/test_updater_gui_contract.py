@@ -1,10 +1,10 @@
-"""Compiled GUI updater policies; no network, UAC, application or real update."""
+﻿"""Compiled GUI updater policies; no network, UAC, application or real update."""
 import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
-ROOT=Path(__file__).parent
+ROOT = Path(__file__).resolve().parent.parent
 CS=r'''
 using System; using System.IO; using System.Reflection; using System.Collections.Generic;
 class UpdaterContract {

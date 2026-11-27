@@ -1,4 +1,4 @@
-"""Offline tests for official capture import: UID choice, conflicts, and DB writes.
+﻿"""Offline tests for official capture import: UID choice, conflicts, and DB writes.
 
 Uses synthetic capture ZIPs and throwaway databases so a real account DB is never touched.
 """
@@ -11,7 +11,7 @@ import zipfile
 from contextlib import closing
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent
+REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 import capture_import

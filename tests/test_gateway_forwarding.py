@@ -1,4 +1,4 @@
-"""Pure-memory gateway regression tests: no DB, sockets, or game process."""
+﻿"""Pure-memory gateway regression tests: no DB, sockets, or game process."""
 import asyncio
 import contextlib
 import io
@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 # exec avoids importing dependencies of Manager.__init__ or writing pycache.
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).resolve().parent.parent
 namespace = {'__name__': 'gateway_test_module', '__file__': str(ROOT / 'room_gateway.py')}
 exec(compile((ROOT / 'room_gateway.py').read_text(encoding='utf-8'), str(ROOT / 'room_gateway.py'), 'exec'), namespace)
 packet, integer, blob = (namespace[name] for name in ('packet', 'integer', 'blob'))

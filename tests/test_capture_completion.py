@@ -1,9 +1,12 @@
-"""Synthetic regressions for completed output reuse and recovery; no real capture."""
+﻿"""Synthetic regressions for completed output reuse and recovery; no real capture."""
 import json, tempfile, unittest
 from pathlib import Path
 from unittest.mock import Mock,patch
 import official_capture as capture
 from test_official_import import make_zip,main_data
+import sys
+# SIBLING_TESTS: this suite imports sibling test modules by name.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 class CaptureCompletionTests(unittest.TestCase):
     def setUp(self):

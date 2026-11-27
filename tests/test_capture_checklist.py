@@ -1,4 +1,4 @@
-"""Synthetic evidence classification tests. Never opens a real capture or DB."""
+﻿"""Synthetic evidence classification tests. Never opens a real capture or DB."""
 from collections import Counter
 import json
 from pathlib import Path
@@ -84,7 +84,7 @@ class RuntimePortTests(unittest.TestCase):
         return struct.pack('>H',len(raw))+raw+body
     def setUp(self):
         import sys
-        tool=Path(__file__).resolve().parent/'backup-tool'
+        tool=Path(__file__).resolve().parent.parent / 'backup-tool'
         sys.path.insert(0,str(tool))
         sys.path.insert(0,str(tool/'proto_gen'))
         global net_pb2

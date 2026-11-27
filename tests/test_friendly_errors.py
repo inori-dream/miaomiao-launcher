@@ -1,12 +1,11 @@
-"""Compiled checks for Friendly error translation; no capture, no window, no network."""
+﻿"""Compiled checks for Friendly error translation; no capture, no window, no network."""
 import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
 
-ROOT = Path(__file__).parent
-
+ROOT = Path(__file__).resolve().parent.parent
 CS = r'''
 using System; using System.IO; using System.Net; using System.IO.Compression;
 class FriendlyContract {
