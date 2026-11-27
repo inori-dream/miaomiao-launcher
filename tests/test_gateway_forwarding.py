@@ -1,4 +1,5 @@
 ﻿"""Pure-memory gateway regression tests: no DB, sockets, or game process."""
+from build.project_layout import source_file
 import asyncio
 import contextlib
 import io
@@ -10,8 +11,8 @@ from unittest.mock import AsyncMock, patch
 
 # exec avoids importing dependencies of Manager.__init__ or writing pycache.
 ROOT = Path(__file__).resolve().parent.parent
-namespace = {'__name__': 'gateway_test_module', '__file__': str(ROOT / 'room_gateway.py')}
-exec(compile((ROOT / 'room_gateway.py').read_text(encoding='utf-8'), str(ROOT / 'room_gateway.py'), 'exec'), namespace)
+namespace = {'__name__': 'gateway_test_module', '__file__': str(source_file(ROOT, 'room_gateway.py'))}
+exec(compile((source_file(ROOT, 'room_gateway.py')).read_text(encoding='utf-8'), str(source_file(ROOT, 'room_gateway.py')), 'exec'), namespace)
 packet, integer, blob = (namespace[name] for name in ('packet', 'integer', 'blob'))
 
 
@@ -234,7 +235,7 @@ class LoginNameBackfillTests(unittest.TestCase):
         # Read the actual checked-in generated descriptor, bypass its version guard.
         import ast
         from google.protobuf import descriptor_pool, message_factory
-        tree = ast.parse((ROOT / 'backup-tool/proto_gen/net_pb2.py').read_text(encoding='utf-8'))
+        tree = ast.parse((source_file(ROOT, 'backup-tool/proto_gen/net_pb2.py')).read_text(encoding='utf-8'))
         serialized = next(ast.literal_eval(node.value.args[0]) for node in tree.body
                           if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == 'DESCRIPTOR' for target in node.targets))
         pool = descriptor_pool.DescriptorPool(); pool.AddSerializedFile(serialized)

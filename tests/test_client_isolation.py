@@ -1,4 +1,5 @@
 ﻿"""Real-filesystem regression tests for private-client isolation and cache integrity."""
+from build.project_layout import source_file
 import json
 import os
 from pathlib import Path
@@ -72,7 +73,7 @@ class ClientIsolationTestCase(unittest.TestCase):
             self.skipTest('Windows Junction tests require Windows.')
         result = subprocess.run([
             'powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
-            str(REPO / 'make_junction.ps1'), '-Destination', str(destination), '-Source', str(source),
+            str(source_file(REPO, 'make_junction.ps1')), '-Destination', str(destination), '-Source', str(source),
         ], capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
         if result.returncode or not destination.is_dir() or destination.resolve() != source.resolve():
             self.skipTest('Junction creation unavailable: ' + (result.stderr.strip() or result.stdout.strip()))
@@ -296,17 +297,17 @@ class ClientIsolationTests(ClientIsolationTestCase):
         original_sdk.write_bytes(b'official-sdk')
         self.prepare()
         installed = self.target / 'launcher_Data/Plugins/x86_64/PCGameSDK.dll'
-        self.assertEqual(installed.read_bytes(), (REPO / 'LocalUidSDK.dll').read_bytes())
+        self.assertEqual(installed.read_bytes(), (source_file(REPO, 'LocalUidSDK.dll')).read_bytes())
         self.assertEqual(original_sdk.read_bytes(), b'official-sdk')
         self.assertTrue(identity.cache_matches(self.source, self.marker(), {
-            'launcher_Data/Plugins/x86_64/PCGameSDK.dll': identity.file_digest(REPO / 'LocalUidSDK.dll'),
+            'launcher_Data/Plugins/x86_64/PCGameSDK.dll': identity.file_digest(source_file(REPO, 'LocalUidSDK.dll')),
         }))
         installed.write_bytes(b'old-or-poisoned-sdk')
         self.assertFalse(identity.cache_matches(self.source, self.marker(), {
-            'launcher_Data/Plugins/x86_64/PCGameSDK.dll': identity.file_digest(REPO / 'LocalUidSDK.dll'),
+            'launcher_Data/Plugins/x86_64/PCGameSDK.dll': identity.file_digest(source_file(REPO, 'LocalUidSDK.dll')),
         }))
         self.prepare()
-        self.assertEqual(installed.read_bytes(), (REPO / 'LocalUidSDK.dll').read_bytes())
+        self.assertEqual(installed.read_bytes(), (source_file(REPO, 'LocalUidSDK.dll')).read_bytes())
         self.assertEqual(original_sdk.read_bytes(), b'official-sdk')
 
     def test_quicksdk_runtime_cache_gate_rejects_tampering(self):
@@ -513,6 +514,44 @@ class JunctionIsolationTests(ClientIsolationTestCase):
         self.prepare()
         self.assertEqual((self.target / 'launcher_Data/Resources/shader.bin').read_bytes(), b'new-shader')
         self.assertTrue(identity.cache_matches(self.source, self.marker()))
+
+    def test_yoo_cache_is_linked_while_manifests_copy_and_large_asset_edits_invalidate(self):
+        self.require_junctions()
+        stream_yoo = self.source / 'launcher_Data/StreamingAssets/yoo/DefaultPackage'
+        stream_bundle = stream_yoo / 'large_asset.bundle'
+        stream_bundle.write_bytes(b'A' * 8192)
+        cache_dir = self.source / 'launcher_Data/yoo/DefaultPackage/CacheFiles/ab'
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_bundle = cache_dir / '__data'
+        cache_bundle.write_bytes(b'B' * 8192)
+        self.prepare()
+        for linked_rel in ('launcher_Data/StreamingAssets/yoo', 'launcher_Data/yoo/DefaultPackage/CacheFiles'):
+            linked = self.target / linked_rel
+            self.assertTrue(identity.is_junction(linked), linked_rel)
+            self.assertEqual(linked.resolve(), (self.source / linked_rel).resolve())
+        manifest = self.target / 'launcher_Data/yoo/DefaultPackage/ManifestFiles/PackageManifest_DefaultPackage.version'
+        self.assertFalse(identity.is_reparse_point(manifest))
+        self.assertTrue(identity.cache_matches(self.source, self.marker()))
+        cache_bundle.write_bytes(b'C' * 9000)
+        self.assertFalse(identity.cache_matches(self.source, self.marker()))
+        self.prepare()
+        self.assertTrue(identity.cache_matches(self.source, self.marker()))
+
+    def test_large_client_ready_marker_over_one_megabyte_is_supported(self):
+        self.prepare()
+        recorded = identity.read_ready_marker(self.marker())
+        recorded['files']['launcher_Data/StreamingAssets/yoo/pad'] = '0' * 64
+        # Pad with extra entries exceeding the legacy 1 MiB limit while staying under 16 MiB.
+        for idx in range(13000):
+            recorded['files'][f'launcher_Data/StreamingAssets/yoo/bundle_{idx:05d}.bin'] = f'{idx:064x}'
+        raw = json.dumps(recorded).encode('utf-8')
+        self.assertGreater(len(raw), 1024 * 1024)
+        self.marker().write_bytes(raw)
+        loaded = identity.read_ready_marker(self.marker())
+        self.assertEqual(len(loaded['files']), len(recorded['files']))
+        self.marker().write_bytes(b' ' * (identity.MAX_READY_MARKER_BYTES + 1))
+        with self.assertRaisesRegex(ValueError, 'Invalid client-ready marker'):
+            identity.read_ready_marker(self.marker())
 
     def test_json_write_refuses_linked_parent(self):
         self.require_junctions()

@@ -1,4 +1,5 @@
 ﻿"""GUI state contracts using temporary assemblies; no window, game or service is started."""
+from build.project_layout import source_file
 import os
 from pathlib import Path
 import re
@@ -62,6 +63,13 @@ class GuiStateContract {
  static void Main(string[] args){
   bool english=args[1]=="EN";
   var assembly=Assembly.LoadFrom(args[0]);
+  if(english){
+   var loc=assembly.GetType("OverFieldLocal.Loc",true);var translate=loc.GetMethod("S",BindingFlags.Public|BindingFlags.Static);
+   string translated=(string)translate.Invoke(null,new object[]{"抓包启动失败（7）：synthetic"});
+   Need(translated.StartsWith("Capture failed to start (7") && translated.Contains("synthetic"),"English capture error fallback missing: "+translated);
+   string shortLabel=(string)translate.Invoke(null,new object[]{"失败后不截断"});
+   Need(shortLabel=="失败后不截断","Short label matched prefix unexpectedly: "+shortLabel);
+  }
   var formType=assembly.GetType("OverFieldLocal.LauncherForm",true);
   var statusType=assembly.GetType("OverFieldLocal.ServiceStatus",true);
   var resultType=assembly.GetType("OverFieldLocal.Result",true);
@@ -97,6 +105,9 @@ class GuiStateContract {
   var form=NewForm(assembly,root,"steam");
   var badge=(Label)formType.GetField("badge",BindingFlags.Instance|BindingFlags.NonPublic).GetValue(form);
   badge.Text="sentinel";
+  var updateA11y=formType.GetMethod("UpdateDynamicAccessibility",BindingFlags.Instance|BindingFlags.NonPublic);
+  updateA11y.Invoke(form,null);
+  Need(badge.AccessibleDescription=="sentinel","Dynamic status is not exposed to assistive technology");
   var apply=formType.GetMethod("TryApplyStatus",BindingFlags.Instance|BindingFlags.NonPublic);
   Need(!(bool)apply.Invoke(form,new object[]{"solo",Status(statusType,"solo",true,true)}),"Previous mode repainted current mode");
   Need(badge.Text=="sentinel","Stale status changed the badge");
@@ -166,9 +177,9 @@ class LauncherGuiStateTests(unittest.TestCase):
             command = [str(csc), '/nologo', '/target:winexe', '/codepage:65001', '/warnaserror+',
                        '/reference:System.Windows.Forms.dll', '/reference:System.Drawing.dll',
                        '/reference:System.Web.Extensions.dll', *defines, f'/out:{output}',
-                       str(ROOT / 'Launcher.cs'), str(ROOT / 'Friendly.cs'),
-                       str(ROOT / 'SeasideUI.cs'), str(ROOT / 'RoomManagerForm.cs'),
-                       str(ROOT / 'Strings.cs'), str(ROOT / 'UpdaterUI.cs')]
+                       str(source_file(ROOT, 'Launcher.cs')), str(source_file(ROOT, 'Friendly.cs')),
+                       str(source_file(ROOT, 'SeasideUI.cs')), str(source_file(ROOT, 'RoomManagerForm.cs')),
+                       str(source_file(ROOT, 'Strings.cs')), str(source_file(ROOT, 'UpdaterUI.cs'))]
             result = subprocess.run(command, capture_output=True, timeout=30)
             if result.returncode:
                 raise RuntimeError(result.stdout.decode('utf-8', errors='replace') +
@@ -192,6 +203,12 @@ class LauncherGuiStateTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr.decode('utf-8', errors='replace'))
         self.assertIn(b'PASS', result.stdout)
 
+    def test_mode_selection_and_tab_order_have_accessibility_metadata(self):
+        source = source_file(ROOT, 'Launcher.cs').read_text(encoding='utf-8-sig')
+        self.assertIn('button.AccessibleRole = AccessibleRole.RadioButton', source)
+        self.assertIn('order[i].TabIndex = i', source)
+        self.assertIn('AccessibleDescription = Loc.S("单机模式")', source)
+
     def test_chinese_state_results_and_accessibility(self):
         self.check('CN')
 
@@ -199,7 +216,7 @@ class LauncherGuiStateTests(unittest.TestCase):
         self.check('EN')
 
     def test_close_and_long_operations_are_bounded_off_ui_thread(self):
-        source = (ROOT / 'Launcher.cs').read_text(encoding='utf-8-sig')
+        source = (source_file(ROOT, 'Launcher.cs')).read_text(encoding='utf-8-sig')
         closing = source.split('FormClosing += async delegate', 1)[1].split('void ConfigureAccessibility', 1)[0]
         self.assertIn('e.Cancel = true', closing)
         self.assertIn('await Task.Run(() => backend.Cleanup())', closing)
@@ -212,7 +229,7 @@ class LauncherGuiStateTests(unittest.TestCase):
 
     def test_only_the_cleanup_path_cancels_its_close(self):
         """An update handoff must be able to close the form, or the helper never starts."""
-        source = (ROOT / 'Launcher.cs').read_text(encoding='utf-8-sig')
+        source = (source_file(ROOT, 'Launcher.cs')).read_text(encoding='utf-8-sig')
         closing = source.split('FormClosing += async delegate', 1)[1].split('void ConfigureAccessibility', 1)[0]
         self.assertIn('bool needsCleanup', closing)
         # Cancel must be conditional, and it must happen after the guard is computed.
@@ -226,7 +243,7 @@ class LauncherGuiStateTests(unittest.TestCase):
 
     def test_capture_state_refresh_releases_its_guard(self):
         """A latched guard would let the capture state be read once, ever."""
-        source = (ROOT / 'Launcher.cs').read_text(encoding='utf-8-sig')
+        source = (source_file(ROOT, 'Launcher.cs')).read_text(encoding='utf-8-sig')
         refresh = source.split('async Task RefreshCaptureState()', 1)[1].split('internal void ApplyCaptureState', 1)[0]
         self.assertIn('checkingCaptureState=true', refresh)
         self.assertIn('finally { checkingCaptureState=false; }', refresh)

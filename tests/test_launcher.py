@@ -1,3 +1,4 @@
+from build.project_layout import source_file
 import contextlib
 import io
 import json
@@ -152,7 +153,7 @@ class DataAndUidTests(unittest.TestCase):
         callback_type=ctypes.CFUNCTYPE(None,ctypes.c_char_p,ctypes.c_int);messages=[]
         callback=callback_type(lambda data,length:messages.append(json.loads(ctypes.string_at(data,length))))
         try:
-            library=ctypes.CDLL(str(Path(__file__).resolve().parent.parent / 'LocalUidSDK.dll'))
+            library=ctypes.CDLL(str(source_file(Path(__file__).resolve().parent.parent, 'LocalUidSDK.dll')))
             library.SDKInit.argtypes=[ctypes.c_char_p,ctypes.c_void_p,ctypes.c_int,ctypes.c_int,callback_type]
             library.SDKLogin.argtypes=[callback_type]
             self.assertEqual(library.SDKInit(b'{}',None,0,1,callback),0)
@@ -176,18 +177,18 @@ print(json.dumps({'code': library.SDKLogin(callback), 'messages': messages}))
 """
         for value in ('0', '4294967296', '10000000000', 'abc', '-1', ' 1000000'):
             environment = dict(os.environ, LOLO_SDK_UID=value)
-            result = subprocess.run([sys.executable, '-c', script], cwd=Path(__file__).resolve().parent.parent,
+            result = subprocess.run([sys.executable, '-c', script], cwd=source_file(Path(__file__).resolve().parent.parent, 'LocalUidSDK.dll').parent,
                                     env=environment, capture_output=True, text=True, check=True)
             payload = json.loads(result.stdout)
             self.assertEqual(payload['code'], -1, value)
             self.assertEqual(payload['messages'], [], value)
         environment = dict(os.environ)
         environment.pop('LOLO_SDK_UID', None)
-        result = subprocess.run([sys.executable, '-c', script], cwd=Path(__file__).resolve().parent.parent,
+        result = subprocess.run([sys.executable, '-c', script], cwd=source_file(Path(__file__).resolve().parent.parent, 'LocalUidSDK.dll').parent,
                                 env=environment, capture_output=True, text=True, check=True)
         self.assertEqual(json.loads(result.stdout)['code'], -1)
         environment['LOLO_SDK_UID'] = '4294967295'
-        result = subprocess.run([sys.executable, '-c', script], cwd=Path(__file__).resolve().parent.parent,
+        result = subprocess.run([sys.executable, '-c', script], cwd=source_file(Path(__file__).resolve().parent.parent, 'LocalUidSDK.dll').parent,
                                 env=environment, capture_output=True, text=True, check=True)
         payload = json.loads(result.stdout)
         self.assertEqual(payload['code'], 0)

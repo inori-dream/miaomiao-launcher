@@ -1,4 +1,5 @@
 ﻿"""Compiled checks for Friendly error translation; no capture, no window, no network."""
+from build.project_layout import source_file
 import os
 from pathlib import Path
 import subprocess
@@ -35,6 +36,12 @@ class FriendlyContract {
   Need(causes.Split('\n').Length>=5,"capture causes missing");
   string combined=OverFieldLocal.Friendly.For("停止服务",new IOException("busy"));
   Need(combined.Contains("停止服务"),"action lost");
+  string tb=OverFieldLocal.Friendly.Describe(new InvalidOperationException("Traceback (most recent call last):\n  File \"x.py\", line 1\nModuleNotFoundError: No module named 'official_launcher'"),"采集");
+  Need(!tb.Contains("Traceback") && (tb.Contains("app\\") || tb.Contains("No module named")),"traceback not cleaned");
+  string prof=OverFieldLocal.Friendly.Describe(new InvalidOperationException("Profile operation failed: FileNotFoundError: LoloServer/Lolo.exe is missing."),"启动");
+  Need(prof.Contains("LoloServer") && prof.Contains("server-kit"),"profile error lost actionable fix");
+  string rate=OverFieldLocal.Friendly.Describe(new InvalidOperationException("HTTP Error 403: rate limit exceeded"),"自动更新");
+  Need(!String.IsNullOrWhiteSpace(rate) && !rate.Contains("Traceback"),"rate limit friendly message invalid");
   Console.WriteLine("PASS");
  }
 }
@@ -57,7 +64,7 @@ class FriendlyErrorTests(unittest.TestCase):
         result = subprocess.run(
             [str(csc), '/nologo', '/target:exe', '/codepage:65001',
              '/reference:System.Windows.Forms.dll', '/out:' + str(cls.exe),
-             str(ROOT / 'Friendly.cs'), str(ROOT / 'Strings.cs'), str(source)],
+             str(source_file(ROOT, 'Friendly.cs')), str(source_file(ROOT, 'Strings.cs')), str(source)],
             capture_output=True)
         if result.returncode:
             raise RuntimeError(result.stdout.decode('utf-8', errors='replace'))
@@ -72,7 +79,7 @@ class FriendlyErrorTests(unittest.TestCase):
         self.assertIn(b'PASS', result.stdout)
 
     def test_strings_cover_new_messages(self):
-        table = (ROOT / 'Strings.cs').read_text(encoding='utf-8-sig')
+        table = (source_file(ROOT, 'Strings.cs')).read_text(encoding='utf-8-sig')
         for key in ['需要管理员权限；请右键以管理员身份运行后重试。',
                     '发生未预期错误，详细原因已写入运行记录；可点「打开日志文件夹」查看。',
                     '常见原因与处理建议：']:
@@ -82,7 +89,7 @@ class FriendlyErrorTests(unittest.TestCase):
         """Only Friendly/Detail may surface exception text, never e.Message directly into the UI."""
         offenders = []
         for name in ['Launcher.cs', 'UpdaterUI.cs', 'RoomManagerForm.cs']:
-            for number, line in enumerate((ROOT / name).read_text(encoding='utf-8-sig').splitlines(), 1):
+            for number, line in enumerate((source_file(ROOT, name)).read_text(encoding='utf-8-sig').splitlines(), 1):
                 stripped = line.strip()
                 if 'Friendly.' in stripped:
                     continue

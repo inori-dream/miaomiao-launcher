@@ -1,0 +1,3 @@
+mitmproxy>=10,<13
+# Experimental QuickSDK PC private-process adapter (Windows x64).
+frida==17.24.3; sys_platform == "win32"

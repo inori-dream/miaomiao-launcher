@@ -11,6 +11,10 @@ class OfficialLauncherTests(unittest.TestCase):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.root=Path(self.tmp.name);self.base=self.root/'app';self.base.mkdir()
         self.exe=self.root/'official-game'/'launcher.exe';self.exe.parent.mkdir();self.exe.write_bytes(b'MZ-synthetic')
+    def test_capture_errors_include_english_message(self):
+        payload=capture.error_payload(ValueError('抓包启动失败（7）：synthetic'))
+        self.assertIn('抓包启动失败',payload['error'])
+        self.assertIn('Capture failed to start',payload['errorEn'])
     def test_empty_and_relative_paths_are_rejected(self):
         for value in (None,'','launcher.exe'):
             with self.assertRaises(ValueError):launcher.validate_launcher(value,self.base)

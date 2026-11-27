@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "version": "1.5.0",
+  "artifacts": {
+    "CN": {
+      "file": "OverFieldLauncher.exe",
+      "define": null,
+      "assemblyTitle": "开放空间私服启动器",
+      "launcherLanguage": "zh-CN",
+      "defaultMode": "solo",
+      "settingsFile": "launcher.settings.json"
+    },
+    "EN": {
+      "file": "OverFieldLauncher-EN.exe",
+      "define": "ENGLISH",
+      "assemblyTitle": "OverField International Launcher",
+      "launcherLanguage": "en",
+      "defaultMode": "steam",
+      "settingsFile": "launcher.settings-en.json"
+    }
+  },
+  "sdk": {
+    "file": "LocalUidSDK.dll",
+    "machine": "AMD64",
+    "exports": [
+      "SDKInit",
+      "SDKInitInLauncher",
+      "SDKLogin",
+      "SDKLoginInLauncher",
+      "SDKOfflineGameLogin",
+      "SDKLoginByQRCode",
+      "SDKGetUserInfo",
+      "SDKGetUserInfoFromLauncher",
+      "SDKStartHeartbeat",
+      "SDKOpenLauncher",
+      "SDKSetCrashHandler",
+      "SDKPay",
+      "SDKCloseAccount",
+      "SDKOpenAgreementWindow",
+      "SDKSetWindowsMode",
+      "SDKUnInit",
+      "SDKLogout",
+      "SDKBindLauncher",
+      "SDKBindLauncherNoParent",
+      "SDKUnBindLauncher",
+      "SDKGetDLCInfo",
+      "SDKNotifyZone",
+      "SDKShowCustomerService",
+      "SDKTrackEvent"
+    ]
+  },
+  "launcherSources": [
+    "src/launcher/Launcher.cs",
+    "src/launcher/Friendly.cs",
+    "src/launcher/SeasideUI.cs",
+    "src/launcher/RoomManagerForm.cs",
+    "src/launcher/Strings.cs",
+    "src/launcher/UpdaterUI.cs",
+    "src/runtime/launcher.manifest",
+    "src/runtime/launcher.ico"
+  ],
+  "sdkSources": ["src/sdk/LocalUidSDK.cpp", "src/sdk/sdk.def"],
+  "cleanStartAssets": ["launcher.manifest", "launcher.ico"],
+  "smokeTest": {
+    "mode": "ui-preview",
+    "argument": "--ui-preview",
+    "startsGame": false,
+    "startsServices": false,
+    "timeoutSeconds": 30,
+    "sizes": ["1240x900", "1040x740"]
+  },
+  "signing": {
+    "required": false,
+    "acceptedUnsignedStatus": "NotSigned",
+    "note": "Unsigned release candidates must be reported as unsigned; no signing identity is supplied."
+  },
+  "reproducibility": {
+    "required": true,
+    "method": "Framework csc PE/MVID normalization and MSVC link /Brepro; compare SHA-256 across two builds of the same source snapshot."
+  }
+}

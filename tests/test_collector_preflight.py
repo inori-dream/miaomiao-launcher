@@ -1,4 +1,5 @@
 ﻿"""Read-only preflight contract tests; native calls mocked, no real capture."""
+from build.project_layout import source_file
 import importlib.util
 from pathlib import Path
 import subprocess
@@ -7,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
-spec = importlib.util.spec_from_file_location("collector_preflight", ROOT / "backup-tool/collector_preflight.py")
+spec = importlib.util.spec_from_file_location("collector_preflight", source_file(ROOT, "backup-tool/collector_preflight.py"))
 preflight = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(preflight)
 
@@ -28,7 +29,7 @@ class PreflightTests(unittest.TestCase):
 
     def test_unknown_dependency_never_ready(self):
         with patch.object(Path, "is_file", return_value=True), patch.object(Path, "is_dir", return_value=True), patch.object(preflight, "probe", return_value=("unknown", "timeout")):
-            result = preflight.inspect_runtime(ROOT / "backup-tool", "python.exe", "tshark.exe", timeout=0.1)
+            result = preflight.inspect_runtime(source_file(ROOT, "backup-tool"), "python.exe", "tshark.exe", timeout=0.1)
         self.assertFalse(result["ready"])
         self.assertEqual(next(item for item in result["checks"] if item["id"] == "python")["state"], "unknown")
 

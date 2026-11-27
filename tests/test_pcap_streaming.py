@@ -1,4 +1,5 @@
 ﻿"""Metadata, safety and memory regressions for mixed PktMon interfaces."""
+from build.project_layout import source_file
 from contextlib import redirect_stdout
 import io
 from pathlib import Path
@@ -8,7 +9,7 @@ import tempfile
 import tracemalloc
 import unittest
 from unittest.mock import patch
-sys.path.insert(0,str(Path(__file__).resolve().parent.parent / 'backup-tool'))
+sys.path.insert(0,str(source_file(Path(__file__).resolve().parent.parent, 'backup-tool')))
 import pcap_compat as compat
 from test_wifi_compat import ipv4_tcp, wifi
 # SIBLING_TESTS: this suite imports sibling test modules by name.

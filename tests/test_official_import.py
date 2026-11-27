@@ -107,6 +107,32 @@ class OfficialImportTests(unittest.TestCase):
                 official_import.import_account(source, db, None)
             self.assertIn("冲突", str(caught.exception))
 
+    def test_official_import_allows_overwrite_when_explicitly_confirmed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = make_database(root / "profiles/solo/db/lolo.db")
+            with closing(sqlite3.connect(db)) as connection, connection:
+                connection.execute("INSERT INTO of_user VALUES(111,111,0)")
+                connection.execute("INSERT INTO of_game VALUES(111,'a','b',X'AB')")
+                connection.execute("INSERT INTO of_game_basic VALUES(111,'Other',7)")
+                connection.execute("INSERT INTO of_user VALUES(777,777,0)")
+                connection.execute("INSERT INTO of_game VALUES(777,'a','b',X'01')")
+                connection.execute("INSERT INTO of_game_basic VALUES(777,'Old',9)")
+            source = make_zip(root / "account_Test_777.zip", main_data(777, "Updated"))
+            plan = official_import.plan(source, db, login_uid=None)
+            self.assertTrue(plan["conflict"])
+            with self.assertRaises(ValueError):
+                official_import.import_account(source, db, None, allow_overwrite=False)
+            result = official_import.import_account(source, db, None, allow_overwrite=True)
+            self.assertTrue(result["overwroteExisting"])
+            with closing(sqlite3.connect(db)) as connection:
+                self.assertEqual(connection.execute("SELECT nick_name FROM of_game_basic WHERE user_id=777").fetchone()[0], "Updated")
+                self.assertNotEqual(connection.execute("SELECT bin_data FROM of_game WHERE user_id=777").fetchone()[0], b"\x01")
+                self.assertEqual(connection.execute("SELECT bin_data FROM of_game WHERE user_id=111").fetchone()[0], b"\xab")
+                self.assertEqual(connection.execute("SELECT nick_name FROM of_game_basic WHERE user_id=111").fetchone()[0], "Other")
+            backup_names = [path.name for path in (root / "profiles/solo/backups").iterdir()]
+            self.assertTrue(any(name.startswith("before-import-") for name in backup_names))
+
     def test_import_creates_account_and_preserves_others(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

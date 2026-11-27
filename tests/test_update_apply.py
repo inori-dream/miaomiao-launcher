@@ -603,6 +603,8 @@ class AppliedNoticeTests(unittest.TestCase):
 class AllowlistTests(unittest.TestCase):
     def test_allowlist(self):
         for p in ('OverFieldLauncher.exe', 'OverFieldLauncher-EN.exe', 'model_schema.json',
+                  'app/model_schema.json', 'app/World-Control.ps1', 'app/LocalUidSDK.dll',
+                  'app/installation-manifest.json', 'app/release-build.json',
                   'backup-tool/proto_gen/net_pb2.py', 'docs/release.md',
                   'World-Control.ps1', 'Lan-Firewall.ps1', 'make_junction.ps1',
                   'backup-tool/exploration_catalog.json', 'backup-tool/RELEASE-NOTES.txt',
@@ -610,11 +612,34 @@ class AllowlistTests(unittest.TestCase):
                   'backup-tool/使用说明.txt'):
             self.assertTrue(is_managed(p), p)
         for p in ('profiles/a.py', 'runtime/a.py', 'launcher.settings.user.json',
+                  'app/arbitrary.ps1', 'app/backup-tool/a.py', 'profiles/app/a.py',
                   'backup-tool/tools/a.py', 'server-kit/Lolo.exe', 'client/game.py',
                   'runtime-python/a.py', 'docs/a.db', 'docs/a.db-wal',
                   'arbitrary.ps1', 'backup-tool/arbitrary_catalog.json',
                   'backup-tool/config/a.py', 'backup-tool/tools/requirements.txt'):
             self.assertFalse(is_managed(p), p)
+
+    def test_flat_install_upgrades_to_app_layout(self):
+        with tempfile.TemporaryDirectory(prefix='flat-to-app-') as temp:
+            f = Fixture(temp, edition='EN')
+            members = {'app/official_launcher.py': b'new app launcher', 'docs/new.md': b'new doc'}
+            baseline = {'schemaVersion': 1, 'version': '2.0.0', 'edition': 'EN',
+                        'files': {k: meta(v) for k, v in members.items()}}
+            members['app/installation-manifest.json'] = json.dumps(baseline).encode()
+            with zipfile.ZipFile(f.stage / 'payload.zip', 'w', zipfile.ZIP_DEFLATED) as z:
+                for name, data in members.items():
+                    z.writestr(name, data)
+            data = (f.stage / 'payload.zip').read_bytes()
+            files = {k: meta(v) for k, v in members.items()}
+            f.manifest['assets']['EN'] = {**meta(data), 'files': files}
+            f.save_manifest()
+            result = f.run()
+            self.assertEqual(result['status'], 'applied', result)
+            self.assertEqual((f.root / 'app/official_launcher.py').read_bytes(), b'new app launcher')
+            self.assertTrue((f.root / 'app/installation-manifest.json').is_file())
+            self.assertFalse((f.root / 'official_launcher.py').exists())
+            self.assertFalse((f.root / 'installation-manifest.json').exists())
+            self.assertEqual((f.root / 'profiles/a/save.db').read_bytes(), b'user data')
 
 
 if __name__ == '__main__':

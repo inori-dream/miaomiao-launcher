@@ -83,6 +83,7 @@ python official_capture.py status
 - 采集期间不要同时开私服模式，避免客户端连到本机。
 - 协议与端口按现有国服记录配置（TCP 11001–11004、21001、21002），渠道或版本变化时需要调整。
 - 官方客户端版本兼容性未在本次改动中实测，不保证所有版本可用。
+- **地图探索度与星云树**：抓包采集会记录各场景探索数据（含 `exploration.json`/`exploration.txt`）及星云树数据包并完整保存进账号 ZIP；但当前默认 `Lolo.exe` 服务端尚未实现星云树与大地图总探索百分比的持久化与下发，因此这两项目前可以采集保存、暂不支持导入私服恢复（地图内收集物、月亮与区域解锁可正常写入 `SceneMap`）。
 
 ## PktMon 状态与错误排查
 
@@ -93,7 +94,7 @@ PktMon 原生输出按 UTF-8 读取，不再依赖 PowerShell 5.1 宿主的 GBK 
 ## 测试
 
 ```powershell
-python -m unittest test_pktmon_encoding test_official_launcher test_official_import test_launcher -v
+python -m unittest tests.test_pktmon_encoding tests.test_official_launcher tests.test_official_import tests.test_launcher -v
 ```
 
 `test_official_import` 使用合成数据覆盖：采集 UID 优先、缺失时回退登录 UID、显示 UID 优先于内部 ID、冲突拒绝写入、导入后其他账号不受影响、ZIP 路径安全。

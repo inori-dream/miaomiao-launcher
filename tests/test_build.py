@@ -3,6 +3,7 @@
 The verifier only exercises the launcher's UI-preview path and native SDK
 callbacks. It never starts a game, a service, capture, or a network connection.
 """
+from build.project_layout import source_file
 import argparse
 import base64
 import ctypes
@@ -22,7 +23,7 @@ import unittest
 import privacy_check
 
 ROOT = Path(__file__).resolve().parent.parent
-CONFIG_PATH = ROOT / 'release-build.json'
+CONFIG_PATH = source_file(ROOT, 'release-build.json')
 CONFIG = json.loads(CONFIG_PATH.read_text(encoding='utf-8'))
 ARTIFACT_NAMES = [item['file'] for item in CONFIG['artifacts'].values()] + [CONFIG['sdk']['file']]
 
@@ -162,6 +163,9 @@ function AttributeValue($type) {
 def signature_info(paths):
     literal = ','.join("'" + str(path).replace("'", "''") + "'" for path in paths)
     script = f'''
+$ErrorActionPreference = 'Stop'
+# A PowerShell 7 parent can leave incompatible modules in PSModulePath.
+Import-Module (Join-Path $PSHOME 'Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop
 $result = @(Get-AuthenticodeSignature {literal} | ForEach-Object {{
     [ordered]@{{ path=$_.Path; status=[string]$_.Status; message=$_.StatusMessage; signer=if ($_.SignerCertificate) {{ $_.SignerCertificate.Subject }} else {{ '' }} }}
 }})
@@ -239,7 +243,7 @@ def clean_start_test(edition, executable, directory, logs):
     for name in [Path(executable).name, CONFIG['sdk']['file']] + CONFIG['cleanStartAssets']:
         source = Path(executable).parent / name if name != Path(executable).name else Path(executable)
         if name in CONFIG['cleanStartAssets']:
-            source = ROOT / name
+            source = source_file(ROOT, name)
         shutil.copy2(source, edition_dir / name)
     expected_files = sorted(path.name for path in edition_dir.iterdir())
     runs = []
@@ -271,8 +275,8 @@ def clean_start_test(edition, executable, directory, logs):
     return {'passed': True, 'gameStarted': False, 'servicesStarted': False, 'filesRemainClean': True, 'runs': runs}
 
 
-def source_snapshot_info(output):
-    intermediate = Path(output) / '.intermediate'
+def source_snapshot_info(intermediate):
+    intermediate = Path(intermediate)
     launcher = json.loads((intermediate / 'launcher' / 'launcher-inputs.json').read_text(encoding='utf-8-sig'))
     sdk = json.loads((intermediate / 'sdk' / 'sdk-inputs.json').read_text(encoding='utf-8-sig'))
     for name, digest in launcher.items():
@@ -284,7 +288,93 @@ def source_snapshot_info(output):
     return {'launcher': launcher, 'sdk': sdk}
 
 
-def verify_build(directory, report_path, logs, rebuild_directory=None):
+def staged_layout_test(staged_directory, bin_directory):
+    staged = Path(staged_directory).resolve()
+    binaries = Path(bin_directory).resolve()
+    entries = {item.name: item for item in staged.iterdir()}
+    loose_files = [name for name, item in entries.items() if not item.is_dir()]
+    if loose_files:
+        raise ValueError('Staged output root contains loose files: ' + ', '.join(sorted(loose_files)))
+    expected_dirs = {'backup-tool', 'bin', 'cn', 'en'}
+    allowed_dirs = expected_dirs | {'reports'}
+    unexpected = set(entries) - allowed_dirs
+    if unexpected:
+        raise ValueError('Unexpected staged output directories: ' + ', '.join(sorted(unexpected)))
+    missing = expected_dirs - set(entries)
+    if missing:
+        raise ValueError('Missing staged output directories: ' + ', '.join(sorted(missing)))
+
+    sdk_hash = sha256(binaries / CONFIG['sdk']['file'])
+    checked = {}
+    for folder, edition in (('cn', 'CN'), ('en', 'EN')):
+        edition_dir = staged / folder
+        app_dir = edition_dir / 'app'
+        edition_entries = {item.name for item in edition_dir.iterdir()}
+        expected_edition_entries = {'OverFieldLauncher.exe', 'README.md', 'app', 'backup-tool', 'docs'}
+        if edition_entries != expected_edition_entries:
+            raise ValueError(f'{folder} root entries mismatch: {sorted(edition_entries)}')
+        launcher_path = edition_dir / 'OverFieldLauncher.exe'
+        if sha256(launcher_path) != sha256(binaries / CONFIG['artifacts'][edition]['file']):
+            raise ValueError(f'{folder}/OverFieldLauncher.exe does not match built {edition} binary')
+        if sha256(app_dir / CONFIG['sdk']['file']) != sdk_hash:
+            raise ValueError(f'{folder}/app/{CONFIG["sdk"]["file"]} does not match built SDK')
+        actual = inspect_edition(launcher_path)
+        if actual.get('english') != (edition == 'EN'):
+            raise ValueError(f'{folder} launcher edition mismatch: {actual!r}')
+        privacy = subprocess.run(
+            [sys.executable, '-B', '-X', 'utf8', str(app_dir / 'privacy_check.py')],
+            cwd=edition_dir, capture_output=True, text=True, encoding='utf-8', check=False,
+        )
+        if privacy.returncode != 0:
+            raise RuntimeError(privacy_check.safe_error(privacy.stderr or privacy.stdout))
+        importing = subprocess.run(
+            [sys.executable, '-I', '-B', '-X', 'utf8', '-c',
+             'import sys; sys.path.insert(0, sys.argv[1]); import capture_zip', str(app_dir)],
+            capture_output=True, text=True, encoding='utf-8', check=False,
+        )
+        if importing.returncode != 0:
+            raise RuntimeError(privacy_check.safe_error(importing.stderr or importing.stdout))
+        for script_args in (
+            [str(app_dir / 'capture_import.py'), '--help'],
+            [str(app_dir / 'official_import.py'), '--help'],
+            [str(app_dir / 'update_apply.py'), '--help'],
+            [str(app_dir / 'launcher_updater.py'), '--help'],
+            [str(app_dir / 'profile_manager.py'), '--help'],
+            [str(app_dir / 'official_capture.py'), 'status'],
+        ):
+            isolated = subprocess.run(
+                [sys.executable, '-I', '-B', '-X', 'utf8', *script_args],
+                cwd=edition_dir, capture_output=True, text=True, encoding='utf-8', check=False,
+            )
+            if isolated.returncode != 0:
+                raise RuntimeError(f'{folder} isolated script failed {script_args}: {isolated.stderr or isolated.stdout}')
+        # Trigger sibling module imports (official_launcher, repair_version) under isolated mode too.
+        for script_args, expected in (
+            ([str(app_dir / 'official_capture.py'), 'validate-launcher', '--launcher', str(edition_dir / 'missing.exe')], '"error"'),
+            ([str(app_dir / 'profile_manager.py'), 'client', '--root', str(edition_dir), '--base', str(edition_dir / 'missing-profiles')], 'FileNotFoundError'),
+        ):
+            isolated = subprocess.run(
+                [sys.executable, '-I', '-B', '-X', 'utf8', *script_args],
+                cwd=edition_dir, capture_output=True, text=True, encoding='utf-8', check=False,
+            )
+            combined = (isolated.stdout or '') + '\n' + (isolated.stderr or '')
+            if 'ModuleNotFoundError' in combined or expected not in combined:
+                raise RuntimeError(f'{folder} isolated sibling check failed {script_args}: {combined}')
+        checked[folder] = {'launcherSha256': sha256(launcher_path), 'privacyPassed': True, 'importable': True}
+
+    if (staged / 'cn/README.md').read_bytes() == (staged / 'en/README.md').read_bytes():
+        raise ValueError('CN and EN staged README.md should reflect their distinct editions')
+    if not (staged / 'en/README.md').read_text(encoding='utf-8').startswith(f"# OverField International Launcher {CONFIG['version']}"):
+        raise ValueError('EN staged README.md version header mismatch')
+    standalone_backup = staged / 'backup-tool'
+    if not (standalone_backup / 'parse_pcap.py').is_file():
+        raise ValueError('Standalone backup-tool is missing parse_pcap.py')
+    if (standalone_backup / 'tools').exists() or list(standalone_backup.rglob('test_*.py')):
+        raise ValueError('Standalone backup-tool contains excluded vendor tools or tests')
+    return {'passed': True, 'directories': sorted(entries), 'editions': checked}
+
+
+def verify_build(directory, report_path, logs, rebuild_directory=None, intermediate_directory=None, staged_directory=None):
     directory = Path(directory).resolve()
     report_path = Path(report_path).resolve()
     logs = Path(logs).resolve()
@@ -337,7 +427,7 @@ def verify_build(directory, report_path, logs, rebuild_directory=None):
                 'english': edition == 'EN', 'title': 'OverField · Local Launcher' if edition == 'EN' else '开放空间 · 本地启动器',
                 'start': 'Start game  →' if edition == 'EN' else '启动游戏  →',
                 'defaultMode': expected['defaultMode'], 'settingsFile': expected['settingsFile'],
-                'assemblyTitle': expected['assemblyTitle'], 'fileVersion': '1.3.0.0',
+                'assemblyTitle': expected['assemblyTitle'], 'fileVersion': CONFIG['version'] + '.0',
                 'informationalVersion': CONFIG['version'],
             }
             for key, value in wanted.items():
@@ -360,7 +450,10 @@ def verify_build(directory, report_path, logs, rebuild_directory=None):
         return sdk_callback_test(path)
 
     record('sdk-exports-and-callbacks', check_sdk)
-    record('source-snapshots', lambda: source_snapshot_info(directory))
+    snapshot_dir = Path(intermediate_directory).resolve() if intermediate_directory else directory / '.intermediate'
+    record('source-snapshots', lambda: source_snapshot_info(snapshot_dir))
+    if staged_directory:
+        record('staged-layout', lambda: staged_layout_test(staged_directory, directory))
     with tempfile.TemporaryDirectory(prefix='launcher-clean-start-', dir=logs) as smoke:
         for edition, expected in CONFIG['artifacts'].items():
             record(f'clean-start-{edition}', lambda edition=edition, expected=expected: clean_start_test(edition, directory / expected['file'], smoke, logs))
@@ -412,7 +505,7 @@ class BuildScriptTests(unittest.TestCase):
         self.assertFalse(CONFIG['smokeTest']['startsServices'])
 
     def test_launcher_script_uses_framework_csc_and_guards_failures(self):
-        code = (ROOT / 'build_launcher.ps1').read_text(encoding='utf-8-sig')
+        code = (source_file(ROOT, 'build_launcher.ps1')).read_text(encoding='utf-8-sig')
         self.assertIn('Framework64\\v4.0.30319\\csc.exe', code)
         self.assertIn("'/warnaserror+'", code)
         self.assertIn("'/debug-'", code)
@@ -422,7 +515,7 @@ class BuildScriptTests(unittest.TestCase):
         self.assertNotIn("'/deterministic'", code)  # Unsupported by the installed Framework compiler.
 
     def test_sdk_script_discovers_build_tools_and_is_reproducible(self):
-        code = (ROOT / 'build_sdk.ps1').read_text(encoding='utf-8-sig')
+        code = (source_file(ROOT, 'build_sdk.ps1')).read_text(encoding='utf-8-sig')
         self.assertIn('vswhere.exe', code)
         self.assertIn('Microsoft.VisualStudio.Component.VC.Tools.x86.x64', code)
         self.assertIn('Windows Kits\\Installed Roots', code)
@@ -431,7 +524,7 @@ class BuildScriptTests(unittest.TestCase):
         self.assertNotIn('2022\\Community', code)
 
     def test_build_all_never_reuses_old_outputs(self):
-        code = (ROOT / 'build_all.bat').read_text(encoding='utf-8-sig')
+        code = (source_file(ROOT, 'build_all.bat')).read_text(encoding='utf-8-sig')
         for name in ARTIFACT_NAMES:
             self.assertIn(name, code)
         self.assertIn('if errorlevel 1', code)
@@ -442,10 +535,97 @@ class BuildScriptTests(unittest.TestCase):
     def test_build_files_are_release_allowlisted(self):
         for name in ('build_launcher.ps1', 'build_sdk.cmd', 'build_sdk.ps1', 'build_all.bat',
                      'release-build.json', 'tests/test_build.py'):
-            self.assertIn(name, privacy_check.ALLOWED)
+            self.assertIn(source_file(ROOT, name).relative_to(ROOT).as_posix(), privacy_check.ALLOWED)
+
+    def test_update_packages_keep_capture_runtime_importable(self):
+        import io
+        import zipfile
+        from contextlib import redirect_stdout
+        from unittest.mock import patch
+        from build import build_update_assets as builder
+
+        for layout in ('flat', 'repository', 'repository-bin', 'repository-app'):
+            with self.subTest(layout=layout), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source, templates, output = (root / name for name in ('source', 'templates', 'output'))
+                runtime = source if layout == 'flat' else source / 'src/runtime'
+                binaries = source if layout == 'flat' else source / (
+                    'dist/bin' if layout in ('repository-bin', 'repository-app') else 'dist'
+                )
+                runtime.mkdir(parents=True)
+                binaries.mkdir(parents=True, exist_ok=True)
+                templates.mkdir()
+                for name in ('capture_zip.py', 'privacy_check.py', 'launcher_updater.py',
+                             'update_apply.py', 'update_policy.py', 'update_trust.py'):
+                    shutil.copyfile(source_file(ROOT, name), runtime / name)
+                (source / 'docs').mkdir()
+                shutil.copyfile(source_file(ROOT, 'docs/auto-update.md'), source / 'docs/auto-update.md')
+                template_entry = 'app/capture_zip.py' if layout == 'repository-app' else 'capture_zip.py'
+                for edition, binary in CONFIG['artifacts'].items():
+                    (binaries / binary['file']).write_bytes(b'MZ synthetic build fixture')
+                    with zipfile.ZipFile(templates / f'OverFieldLauncher-{edition}-portable.zip', 'w') as archive:
+                        archive.write(runtime / 'capture_zip.py', template_entry)
+                signing_key = root / 'synthetic-key.pem'
+                signing_key.write_text('Synthetic test fixture; not a private key.', encoding='ascii')
+
+                def fake_sign(arguments, **kwargs):
+                    Path(arguments[-1]).write_bytes(b'synthetic signature')
+
+                with patch.object(builder.subprocess, 'run', side_effect=fake_sign), \
+                        patch('update_trust.verify_manifest', return_value={'version': CONFIG['version']}), \
+                        redirect_stdout(io.StringIO()):
+                    builder.build(CONFIG['version'], source, templates, output, 'synthetic-node', signing_key)
+
+                # All supported layouts must produce valid bundles and keep runtime imports working.
+                for edition in CONFIG['artifacts']:
+                    for kind in ('update', 'portable'):
+                        package = root / f'{edition}-{kind}'
+                        with zipfile.ZipFile(output / f'OverFieldLauncher-{edition}-{kind}.zip') as archive:
+                            self.assertFalse(any(name.startswith(('src/', 'build/')) for name in archive.namelist()))
+                            archive.extractall(package)
+                        import_root = package / 'app' if layout == 'repository-app' else package
+                        self.assertTrue((import_root / 'installation-manifest.json').is_file())
+                        if kind == 'portable':
+                            self.assertTrue((import_root / 'release-build.json').is_file())
+                        result = subprocess.run([
+                            sys.executable, '-I', '-B', '-X', 'utf8', '-c',
+                            'import sys; sys.path.insert(0, sys.argv[1]); import capture_zip', str(import_root)
+                        ], capture_output=True, text=True, encoding='utf-8', check=False)
+                        self.assertEqual(result.returncode, 0, f'{layout}/{edition}-{kind}: {result.stderr}')
+
+    def test_stage_runtime_organizes_editions_and_backup_tool(self):
+        from build.stage_runtime import stage_runtime
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'dist'
+            binaries = output / 'bin'
+            binaries.mkdir(parents=True)
+            (binaries / 'OverFieldLauncher.exe').write_bytes(b'cn-exe')
+            (binaries / 'OverFieldLauncher-EN.exe').write_bytes(b'en-exe')
+            (binaries / 'LocalUidSDK.dll').write_bytes(b'sdk-dll')
+            summary = stage_runtime(ROOT, output, binaries)
+            self.assertEqual(set(path.name for path in output.iterdir()), {'backup-tool', 'bin', 'cn', 'en'})
+            expected_root = {'OverFieldLauncher.exe', 'README.md', 'app', 'backup-tool', 'docs'}
+            self.assertEqual(set(path.name for path in (output / 'cn').iterdir()), expected_root)
+            self.assertEqual(set(path.name for path in (output / 'en').iterdir()), expected_root)
+            self.assertGreater(summary['backupToolFiles'], 10)
+            self.assertEqual((output / 'cn/OverFieldLauncher.exe').read_bytes(), b'cn-exe')
+            self.assertEqual((output / 'en/OverFieldLauncher.exe').read_bytes(), b'en-exe')
+            self.assertEqual((output / 'cn/app/LocalUidSDK.dll').read_bytes(), b'sdk-dll')
+            self.assertEqual((output / 'en/app/LocalUidSDK.dll').read_bytes(), b'sdk-dll')
+            self.assertTrue((output / 'cn/app/World-Control.ps1').is_file())
+            self.assertIn(f"# OverField International Launcher {CONFIG['version']}",
+                          (output / 'en/README.md').read_text(encoding='utf-8'))
+            self.assertIn('# 开放空间私服启动器', (output / 'cn/README.md').read_text(encoding='utf-8'))
+            self.assertFalse((output / 'cn/RELEASE-NOTES.md').exists())
+            self.assertIn('](channel-switch.md)', (output / 'cn/docs/RELEASE-NOTES.md').read_text(encoding='utf-8'))
+            self.assertTrue((output / 'cn/docs/RELEASE-CHECKLIST.md').is_file())
+            self.assertTrue((output / 'backup-tool/parse_pcap.py').is_file())
+            self.assertFalse((output / 'backup-tool/tools').exists())
+            self.assertEqual(list((output / 'backup-tool').rglob('test_*.py')), [])
 
     def test_sdk_definition_matches_release_contract(self):
-        lines = (ROOT / 'sdk.def').read_text(encoding='utf-8-sig').splitlines()
+        lines = (source_file(ROOT, 'sdk.def')).read_text(encoding='utf-8-sig').splitlines()
         exports = [line.strip() for line in lines[lines.index('EXPORTS') + 1:] if line.strip()]
         self.assertEqual(exports, CONFIG['sdk']['exports'])
 
@@ -460,7 +640,9 @@ class BuildScriptTests(unittest.TestCase):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--verify-build', type=Path)
+    parser.add_argument('--intermediate', type=Path)
     parser.add_argument('--rebuild-directory', type=Path)
+    parser.add_argument('--staged-directory', type=Path)
     parser.add_argument('--report', type=Path)
     parser.add_argument('--logs', type=Path, default=ROOT)
     parser.add_argument('--write-hashes', type=Path)
@@ -471,7 +653,8 @@ def main():
         return 0
     if args.verify_build:
         report = args.report or args.verify_build / 'build-report.json'
-        return verify_build(args.verify_build, report, args.logs, args.rebuild_directory)
+        return verify_build(args.verify_build, report, args.logs, args.rebuild_directory,
+                            args.intermediate, args.staged_directory)
     unittest.main(argv=[sys.argv[0]], verbosity=2)
 
 

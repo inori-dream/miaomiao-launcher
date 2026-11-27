@@ -43,7 +43,7 @@ APK仍是独立第三方原包下载，不会被Windows更新器安装、执行�
 构建命令（开发环境需Node.js；终端用户不需安装Node）：
 
 ```powershell
-python build_update_assets.py --version 1.4.0 --source . --templates <已审核的便携包目录> --out <资产目录> --node <现有node.exe> --signing-key <仓库外专用私钥.pem>
+python build/build_update_assets.py --version 1.4.0 --source . --templates <已审核的便携包目录> --out <资产目录> --node <现有node.exe> --signing-key <仓库外专用私钥.pem>
 ```
 
 保管及备份专用签名私钥，限制读取权限，不打包或提交。生成器先校验受管路径，生成新安装基线并校验真实签名；再上传资产，全部校验成功后才公开Release。若需要轮换公钥，须由现有受信密钥授权的版本引入，不能把任意远程公钥当可信。

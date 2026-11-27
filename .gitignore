@@ -1,12 +1,13 @@
 # Personal runtime data: never commit
 profiles/
-runtime/
+/runtime/
+src/runtime/runtime/
 server-kit/
 runtime-python/
 source/
 dist/
 release/
-launcher.settings.json
+launcher.settings*.json
 .env
 .env.*
 *.db
@@ -31,7 +32,7 @@ launcher.settings.json
 __pycache__/
 .venv/
 # Backup outputs and vendor runtimes
-backup-tool/tools/
+src/runtime/backup-tool/tools/
 output/
 export/
 parsed_*/

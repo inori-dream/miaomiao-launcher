@@ -1,4 +1,5 @@
 ﻿"""Compiled GUI updater policies; no network, UAC, application or real update."""
+from build.project_layout import source_file
 import os
 from pathlib import Path
 import subprocess
@@ -71,7 +72,7 @@ class UpdaterGuiContractTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):cls.tmp.cleanup()
     def check(self,name):
-        r=subprocess.run([str(self.exe),str(ROOT/name),str(self.root/(name+'-data'))],capture_output=True,timeout=20)
+        r=subprocess.run([str(self.exe),str(source_file(ROOT, name)),str(self.root/(name+'-data'))],capture_output=True,timeout=20)
         self.assertEqual(r.returncode,0,r.stderr.decode('utf-8',errors='replace'))
         self.assertIn(b'PASS',r.stdout)
     def test_cn_policy(self):self.check('OverFieldLauncher.exe')

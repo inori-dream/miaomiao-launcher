@@ -1,4 +1,5 @@
 ﻿"""Execute the real capture control branch with mocked PktMon, without elevation."""
+from build.project_layout import source_file
 import json
 import os
 from pathlib import Path
@@ -29,7 +30,13 @@ function Read-Host {
     if($Scenario -eq 'cli-error'){throw 'Simulated input failure'}
     return ''
 }
-function Start-Sleep { param([int]$Seconds,[int]$Milliseconds) $script:sleepCount++ }
+function Start-Sleep {
+    param([int]$Seconds,[int]$Milliseconds)
+    $script:sleepCount++
+    if($Scenario -eq 'gui-multi-poll' -and $script:sleepCount -ge 3){
+        New-Item -ItemType File -Path $StopFlag -Force | Out-Null
+    }
+}
 function Invoke-PacketMonitor {
     param([string[]]$CommandArgs)
     $script:ops.Add(($CommandArgs -join '|'))
@@ -47,7 +54,7 @@ function Invoke-PacketMonitor {
 $Mode='Account';$Ports=@(11001);$ServerIps=@();$CleanupOnly=$false
 if($Scenario -eq 'cli-steam'){$Ports=@();$ServerIps=@('150.5.131.114, 150.5.131.115')}
 $AutoStopSeconds=if($Scenario -eq 'cli-auto'){1}else{0}
-$StopFlag=if($Scenario -eq 'gui-stop'){Join-Path $Root 'stop.flag'}else{''}
+$StopFlag=if($Scenario -in @('gui-stop','gui-multi-poll')){Join-Path $Root 'stop.flag'}else{''}
 $ReadyPath=Join-Path $Root 'ready.json'
 $sessionPath=Join-Path $Root 'account_20200101_120000_001'
 $etl=Join-Path $sessionPath 'capture.etl'
@@ -74,7 +81,7 @@ class CaptureModeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)
             harness=root/'Harness.ps1';harness.write_text(HARNESS,encoding='utf-8-sig')
-            result=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',str(harness),'-CaptureScript',str(ROOT/'backup-tool/capture.ps1'),'-Root',str(root),'-Scenario',scenario],capture_output=True,timeout=30)
+            result=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',str(harness),'-CaptureScript',str(source_file(ROOT, 'backup-tool/capture.ps1')),'-Root',str(root),'-Scenario',scenario],capture_output=True,timeout=30)
             self.assertEqual(result.returncode,0,result.stderr.decode('utf-8',errors='replace'))
             data=json.loads((root/'result.json').read_text(encoding='utf-8-sig'))
             operations=data['operations']
@@ -114,9 +121,18 @@ class CaptureModeTests(unittest.TestCase):
         self.assertEqual(data['sleepCount'],1)
         self.assertTrue(data['pcapExists'])
 
-    def test_gui_stop_flag_keeps_segmented_capture(self):
+    def test_gui_stop_flag_keeps_continuous_segment_capture(self):
         data=self.check('gui-stop')
         self.assertEqual(data['readCount'],0)
+        starts=[op for op in data['operations'] if op.startswith('start|')]
+        self.assertEqual(len(starts),1)
+        self.assertTrue(starts[0].endswith('segment_001.etl'))
+        self.assertTrue(data['pcapExists'])
+
+    def test_gui_multi_poll_does_not_restart_pktmon_mid_capture(self):
+        data=self.check('gui-multi-poll')
+        self.assertEqual(data['readCount'],0)
+        self.assertGreaterEqual(data['sleepCount'],3)
         starts=[op for op in data['operations'] if op.startswith('start|')]
         self.assertEqual(len(starts),1)
         self.assertTrue(starts[0].endswith('segment_001.etl'))

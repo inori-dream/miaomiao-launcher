@@ -150,6 +150,32 @@ class SignedDownloadTests(unittest.TestCase):
             self.assertEqual(self.check()['status'],'error')
         self.assertFalse((self.root/'runtime').exists())
 
+    def test_api_rate_limit_falls_back_to_web_redirect(self):
+        import urllib.error
+        class RedirectResponse(io.BytesIO):
+            def __init__(self, final_url):
+                super().__init__(b'')
+                self._final_url = final_url
+            def geturl(self):
+                return self._final_url
+        def rate_limited(url):
+            self.calls.append(url)
+            if url == updater.LATEST_URL:
+                raise urllib.error.HTTPError(url, 403, 'rate limit exceeded', {}, None)
+            if url == updater.WEB_LATEST_URL:
+                return RedirectResponse('https://github.com/' + trust.REPOSITORY + '/releases/tag/v1.4.0')
+            return self.transport(url)
+        result = updater.check_update(self.root, 'EN', '1.3.0', transport=rate_limited)
+        self.assertEqual(result['status'], 'downloaded', result)
+        self.assertIn(updater.WEB_LATEST_URL, self.calls)
+        def bad_redirect(url):
+            if url == updater.LATEST_URL:
+                raise urllib.error.HTTPError(url, 429, 'too many requests', {}, None)
+            if url == updater.WEB_LATEST_URL:
+                return RedirectResponse('https://github.com/' + trust.REPOSITORY + '/releases')
+            return self.transport(url)
+        self.assertEqual(updater.check_update(self.root, 'EN', '1.3.0', force=True, transport=bad_redirect)['status'], 'error')
+
     def test_en_selection_and_inventory_hash(self):
         result = updater.check_update(self.root,'EN','1.3.0',transport=self.transport)
         self.assertEqual(result['status'],'downloaded',result)

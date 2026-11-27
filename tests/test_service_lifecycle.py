@@ -1,4 +1,5 @@
 ﻿"""Offline failure-injection tests for service and game process lifecycle."""
+from build.project_layout import source_file
 import asyncio
 import json
 import os
@@ -160,6 +161,12 @@ class ServiceRunnerLifecycleTests(unittest.TestCase):
         self.assertFalse(pid_path.exists())
         self.assertFalse(Path(str(pid_path) + '.tmp').exists())
 
+    def test_cleanup_treats_process_exit_race_as_success(self):
+        record = {'pid': 77, 'path': str(self.executable), 'startedTicks': 123}
+        with patch.object(service_runner, '_record_running', return_value=True), \
+             patch.object(service_runner, '_open_verified_process', side_effect=ProcessLookupError('exited')):
+            service_runner.terminate_process_tree(record)
+
     def test_verified_tree_is_killed_child_first(self):
         root = {'pid': 1, 'path': r'C:\task\server.exe', 'startedTicks': 100}
         child = {'pid': 2, 'path': r'C:\task\child.exe', 'startedTicks': 200}
@@ -280,7 +287,7 @@ class PowerShellLifecycleTests(unittest.TestCase):
     def setUpClass(cls):
         if not POWERSHELL.is_file():
             raise unittest.SkipTest('Native PowerShell is unavailable')
-        cls.world = (REPO / 'World-Control.ps1').read_text(encoding='utf-8-sig')
+        cls.world = (source_file(REPO, 'World-Control.ps1')).read_text(encoding='utf-8-sig')
 
     def run_script(self, body):
         with tempfile.TemporaryDirectory() as directory:
@@ -425,7 +432,7 @@ if(-not $taskFailed){throw 'foreign listener was accepted'}
             self.assertTrue(list(runtime.glob('lifecycle-error-solo-*.json')))
 
     def test_firewall_rules_are_allow_only_and_host_port_scoped(self):
-        source = (REPO / 'Lan-Firewall.ps1').read_text(encoding='utf-8-sig')
+        source = (source_file(REPO, 'Lan-Firewall.ps1')).read_text(encoding='utf-8-sig')
         self.assertIn("-Action Allow", source)
         self.assertIn("-LocalPort 19080,19200", source)
         self.assertIn("-LocalPort 19100", source)
@@ -435,6 +442,22 @@ if(-not $taskFailed){throw 'foreign listener was accepted'}
         self.assertNotIn('20080', source)
         self.assertIn('Remove-CreatedRules', source)
         self.assertIn('Write-FirewallResult $false', source)
+
+    def test_launch_client_with_missing_client_fails_with_clear_message(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = root / 'World-Control.ps1'
+            script.write_text(self.world, encoding='utf-8-sig')
+            result_path = root / 'runtime' / 'result.json'
+            result = subprocess.run([
+                str(POWERSHELL), '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+                '-File', str(script), '-Action', 'Start', '-Mode', 'steam',
+                '-GameRoot', str(root / 'empty-game'), '-LaunchClient',
+                '-PythonExe', sys.executable, '-ResultPath', str(result_path)
+            ], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30)
+            self.assertNotEqual(result.returncode, 0)
+            payload = json.loads(result_path.read_text(encoding='utf-8'))
+            self.assertIn('Game client not found', payload.get('Error', ''))
 
 
 if __name__ == '__main__':

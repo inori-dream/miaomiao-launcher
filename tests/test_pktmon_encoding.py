@@ -1,4 +1,5 @@
 ﻿"""Native UTF-8 fixture tests under GBK PowerShell 5.1, without using real PktMon."""
+from build.project_layout import source_file
 import os, subprocess, tempfile, unittest
 from pathlib import Path
 
@@ -78,7 +79,7 @@ class PktMonEncodingTests(unittest.TestCase):
         log=self.root/(mode+'.ops')
         env={**os.environ,'FAKE_PKTMON_MODE':mode,'FAKE_OPERATION_LOG':str(log),'FAKE_ETL':str(etl_override or self.etl)}
         r=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',str(self.harness),
-                          '-CaptureScript',str(ROOT/'backup-tool/capture.ps1'),'-Fixture',str(self.exe),'-Mode',mode],
+                          '-CaptureScript',str(source_file(ROOT, 'backup-tool/capture.ps1')),'-Fixture',str(self.exe),'-Mode',mode],
                          capture_output=True,env=env,timeout=30)
         self.assertEqual(r.returncode,0,r.stderr.decode('gb18030',errors='replace'))
         ops=log.read_text().splitlines() if log.exists() else []

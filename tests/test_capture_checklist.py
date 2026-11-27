@@ -1,4 +1,5 @@
 ﻿"""Synthetic evidence classification tests. Never opens a real capture or DB."""
+from build.project_layout import source_file
 from collections import Counter
 import json
 from pathlib import Path
@@ -28,7 +29,10 @@ class ChecklistTests(unittest.TestCase):
         self.assertEqual(self.items(phase='complete',readable=True)['main']['state'],'missing')
     def test_inventory_equipment_requires_decoded_instance(self):
         self.event('PackNotice',{'items':[{'main_item':{'weapon':{'instance_id':42,'weapon_id':1},'armor':{'field_2':43}}}]})
-        data=self.items(readable=True);self.assertEqual(data['weapon']['state'],'partial')
+        rep=checklist.report(self.counts,self.empty,readable=True)
+        data={i['id']:i for i in rep['items']}
+        self.assertIn('Only bag snapshots were seen',rep['warningEn'])
+        self.assertEqual(data['weapon']['state'],'partial')
         self.assertEqual(data['weapon']['status'],'未见装备列表')
         self.assertEqual(data['armor']['state'],'waiting')
     def test_equipped_item_instance_is_partial_until_dedicated_list_arrives(self):
@@ -86,6 +90,86 @@ class ChecklistTests(unittest.TestCase):
             result=checklist.final_report(d)
             self.assertTrue(all(i['state']=='unknown' for i in result['items']))
 
+    def test_scan_live_etl_reports_collected_without_keeping_temp_copy(self):
+        from collections import Counter
+        import types
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            etl=root/'segment_001.etl'
+            etl.write_bytes(b'etl-header'*32)
+            live=root/'live-progress';live.mkdir()
+            seen_exists=[]
+
+            def fake_run(cmd,**kwargs):
+                Path(cmd[-1]).write_bytes(b'p'*512)
+                return types.SimpleNamespace(returncode=0)
+
+            def fake_scan(decoder,path,stop=None):
+                seen_exists.append(Path(path).is_file())
+                return Counter({'GetWeaponRsp':1}),Counter(),1
+
+            with mock.patch.object(checklist.subprocess,'run',side_effect=fake_run), \
+                 mock.patch.object(checklist,'scan_pcap',side_effect=fake_scan):
+                state,found,zero=checklist.scan_live_etl(object(),etl,live)
+            self.assertEqual(state,'readable')
+            self.assertEqual(found['GetWeaponRsp'],1)
+            self.assertEqual(zero,Counter())
+            self.assertEqual(seen_exists,[True])
+            self.assertEqual(list(live.glob('snapshot-*')),[])
+
+    def test_watch_flushes_and_replaces_live_etl_snapshot_without_double_counting(self):
+        from collections import Counter
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            etl=root/'segment_001.etl'
+            etl.write_bytes(b'initial'*64)
+            stop=root/'live-progress-stop.flag'
+            packets=[120,340]
+            snapshots=[
+                ('readable',Counter({'GetWeaponRsp':1}),Counter()),
+                ('readable',Counter({'GetWeaponRsp':2,'GetArmorRsp':1}),Counter()),
+            ]
+            call_count={'flush':0,'snap':0,'sleep':0}
+
+            def fake_flush(*args,**kwargs):
+                call_count['flush']+=1
+                return True
+
+            def fake_packets():
+                return packets.pop(0) if packets else 340
+
+            def fake_snap(decoder,etl_path,live,stop_flag=None):
+                idx=min(call_count['snap'],len(snapshots)-1)
+                call_count['snap']+=1
+                return snapshots[idx]
+
+            def fake_sleep(seconds):
+                if call_count['snap']==1:
+                    etl.write_bytes(b'updated'*96)
+                elif call_count['snap']>=2:
+                    stop.write_text('1',encoding='utf-8')
+
+            with mock.patch.object(checklist,'load_decoder',return_value=object()), \
+                 mock.patch.object(checklist,'flush_pktmon_session',side_effect=fake_flush), \
+                 mock.patch.object(checklist,'read_packet_counters',side_effect=fake_packets), \
+                 mock.patch.object(checklist,'scan_live_etl',side_effect=fake_snap), \
+                 mock.patch.object(checklist.time,'sleep',side_effect=fake_sleep):
+                checklist.watch(root)
+
+            self.assertGreaterEqual(call_count['flush'],2)
+            self.assertEqual(call_count['snap'],2)
+            progress=json.loads((root/'live-progress/progress.json').read_text(encoding='utf-8'))
+            self.assertTrue(progress['readable'])
+            weapon=next(item for item in progress['items'] if item['id']=='weapon')
+            armor=next(item for item in progress['items'] if item['id']=='armor')
+            self.assertEqual(weapon['state'],'collected')
+            self.assertEqual(weapon['count'],2)
+            self.assertEqual(armor['count'],1)
+
 
 class RuntimePortTests(unittest.TestCase):
     """Channels that pick their game port at runtime must still be decoded."""
@@ -97,7 +181,7 @@ class RuntimePortTests(unittest.TestCase):
         return struct.pack('>H',len(raw))+raw+body
     def setUp(self):
         import sys
-        tool=Path(__file__).resolve().parent.parent / 'backup-tool'
+        tool=source_file(Path(__file__).resolve().parent.parent, 'backup-tool')
         sys.path.insert(0,str(tool))
         sys.path.insert(0,str(tool/'proto_gen'))
         global net_pb2

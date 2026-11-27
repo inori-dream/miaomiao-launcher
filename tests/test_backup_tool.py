@@ -1,4 +1,5 @@
 ﻿"""Synthetic backup tests: no live capture, account login or network access."""
+from build.project_layout import source_file
 from pathlib import Path
 import contextlib
 import io
@@ -12,7 +13,7 @@ from unittest.mock import patch
 from zipfile import ZipFile
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / 'backup-tool'))
+sys.path.insert(0, str(source_file(ROOT, 'backup-tool')))
 import parse_pcap as parser
 import extract_gardens as gardens
 import net_pb2
@@ -307,6 +308,27 @@ class GardenOwnerProfileTests(unittest.TestCase):
         parser.collect_player_profile('OtherPlayerInfoRsp', valid, names)
         parser.collect_player_profile('OtherPlayerInfoReq', valid, names)
         self.assertEqual(names, {333: 'Actual Owner'})
+
+    def test_account_zip_excludes_client_requests(self):
+        main = net_pb2.PlayerMainDataRsp(status=1, player_id=101, player_name='Tester', level=10)
+        payload = frame(1001, b'request-payload') + frame(1006, main.SerializeToString())
+        req_id = next(code for code, name in parser.load_cmd_map().items() if name == 'GetMailsReq')
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / 'export'
+            streams = [
+                ('192.0.2.10:50000', '192.0.2.20:11003', frame(req_id, b''), payload, []),
+            ]
+            with patch.object(parser, 'prepare_capture', side_effect=lambda path: path), \
+                 patch.object(parser, 'list_tcp_streams', return_value=[0]), \
+                 patch.object(parser, 'follow_tcp_stream', return_value=streams[0]), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                parser.analyze_pcap(Path('synthetic.pcapng'), out)
+            summary = json.loads((out / 'summary.json').read_text(encoding='utf-8'))
+            archive_path = out / summary['account_zip']
+            with ZipFile(archive_path) as arc:
+                names = arc.namelist()
+            self.assertTrue(any('_s2c_' in n for n in names))
+            self.assertFalse(any('_c2s_' in n for n in names))
 
 
 if __name__ == '__main__':

@@ -48,5 +48,13 @@ class CaptureZipTests(unittest.TestCase):
         main,entries=capture_import.read_capture(self.dest)
         self.assertEqual(main['player_id'],777)
         self.assertEqual(len(entries['PlayerMainDataRsp']),1)
+    def test_zlib_error_in_member_read_raises_value_error(self):
+        import zlib
+        from unittest.mock import patch
+        with zipfile.ZipFile(self.source) as archive:
+            info = archive.infolist()[0]
+            with patch.object(archive, 'open', side_effect=zlib.error('corrupt deflate')):
+                with self.assertRaisesRegex(ValueError, 'integrity validation failed'):
+                    capture_zip.read_member(archive, info)
 
 if __name__=='__main__':unittest.main()

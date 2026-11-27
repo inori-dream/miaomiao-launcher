@@ -1,4 +1,5 @@
 ﻿"""Exercise compiled GUI helper methods without UI, elevation or real capture."""
+from build.project_layout import source_file
 import os
 from pathlib import Path
 import subprocess
@@ -56,7 +57,7 @@ class CollectorGuiContractTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):cls.temp.cleanup()
     def check(self,name,expected):
-        result=subprocess.run([str(self.exe),str(ROOT/name),str(self.root/name),expected],capture_output=True,timeout=20)
+        result=subprocess.run([str(self.exe),str(source_file(ROOT, name)),str(self.root/name),expected],capture_output=True,timeout=20)
         self.assertEqual(result.returncode,0,result.stderr.decode('utf-8',errors='replace'))
         self.assertIn(b'PASS',result.stdout)
     def test_chinese_preflight_and_close_signal(self):self.check('OverFieldLauncher.exe','统计暂不可用')

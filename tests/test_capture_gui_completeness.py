@@ -1,4 +1,5 @@
 ﻿"""Compile GUI helpers into temporary assemblies; never show a window or start a service."""
+from build.project_layout import source_file
 import os
 from pathlib import Path
 import subprocess
@@ -72,9 +73,9 @@ class CaptureGuiCompletenessTests(unittest.TestCase):
             command = [str(csc), '/nologo', '/target:winexe', '/codepage:65001',
                        '/reference:System.Windows.Forms.dll', '/reference:System.Drawing.dll',
                        '/reference:System.Web.Extensions.dll', *defines, f'/out:{output}',
-                       str(ROOT / 'Launcher.cs'), str(ROOT / 'Friendly.cs'),
-                       str(ROOT / 'SeasideUI.cs'), str(ROOT / 'RoomManagerForm.cs'),
-                       str(ROOT / 'Strings.cs'), str(ROOT / 'UpdaterUI.cs')]
+                       str(source_file(ROOT, 'Launcher.cs')), str(source_file(ROOT, 'Friendly.cs')),
+                       str(source_file(ROOT, 'SeasideUI.cs')), str(source_file(ROOT, 'RoomManagerForm.cs')),
+                       str(source_file(ROOT, 'Strings.cs')), str(source_file(ROOT, 'UpdaterUI.cs'))]
             result = subprocess.run(command, capture_output=True, timeout=30)
             if result.returncode:
                 raise RuntimeError(result.stdout.decode('utf-8', errors='replace') +

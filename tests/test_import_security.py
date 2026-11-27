@@ -238,6 +238,39 @@ class NoOverwriteAndTaskTests(SecurityTestCase):
             self.assertEqual(connection.execute(
                 'SELECT nick_name FROM of_game_basic WHERE user_id=777').fetchone()[0], 'Test')
 
+    def test_explicit_allow_overwrite_updates_uid_after_backups_and_preserves_others(self):
+        other = self.package(main_data(111, 'KeepMe'), name='other.zip')
+        capture_import.import_capture(other, self.profile, 111)
+        source = self.package(name='account.zip')
+        capture_import.import_capture(source, self.profile, 777)
+        with closing(sqlite3.connect(self.database)) as connection:
+            before_777 = connection.execute('SELECT bin_data FROM of_game WHERE user_id=777').fetchone()[0]
+            before_111 = connection.execute('SELECT bin_data FROM of_game WHERE user_id=111').fetchone()[0]
+            name_111 = connection.execute('SELECT nick_name FROM of_game_basic WHERE user_id=111').fetchone()[0]
+        report_before = (self.profile / 'accounts/777/import-report.json').read_bytes()
+
+        changed_main = main_data(777, 'Replacement')
+        changed_main['level'] = 60
+        changed_main['characters'][0]['level'] = 25
+        changed = self.package(changed_main, name='account-changed.zip')
+        result = capture_import.import_capture(changed, self.profile, 777, allow_overwrite=True)
+        self.assertTrue(result['overwroteExisting'])
+        with closing(sqlite3.connect(self.database)) as connection:
+            self.assertNotEqual(connection.execute('SELECT bin_data FROM of_game WHERE user_id=777').fetchone()[0], before_777)
+            self.assertEqual(connection.execute('SELECT nick_name, level FROM of_game_basic WHERE user_id=777').fetchone(), ('Replacement', 60))
+            self.assertEqual(connection.execute('SELECT bin_data FROM of_game WHERE user_id=111').fetchone()[0], before_111)
+            self.assertEqual(connection.execute('SELECT nick_name FROM of_game_basic WHERE user_id=111').fetchone()[0], name_111)
+        self.assertNotEqual((self.profile / 'accounts/777/import-report.json').read_bytes(), report_before)
+        backup_names = [path.name for path in (self.profile / 'backups').iterdir()]
+        self.assertTrue(any(name.startswith('before-import-') for name in backup_names))
+        self.assertTrue(any(name.startswith('account-777-before-import-') for name in backup_names))
+
+        # Identity mismatch in of_user must stay blocked even with allow_overwrite=True.
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute('UPDATE of_user SET user_id=888 WHERE sdk_uid=777')
+        with self.assertRaisesRegex(ValueError, 'mapping'):
+            capture_import.import_capture(changed, self.profile, 777, allow_overwrite=True)
+
     def test_orphan_basic_row_and_uid_mapping_conflict_block_import(self):
         with closing(sqlite3.connect(self.database)) as connection, connection:
             connection.execute("INSERT INTO of_game_basic(user_id,nick_name) VALUES(777,'Orphan')")
@@ -428,6 +461,29 @@ class FieldConflictTests(SecurityTestCase):
             capture_import.import_capture(source, self.profile, 777)
         self.assert_no_save()
 
+    def test_pack_notice_armor_and_poster_using_instance_id_as_outer_item_id_merge_cleanly(self):
+        main = main_data(777)
+        armors = [{'armor_id': 2415004, 'instance_id': 1111, 'level': 91}]
+        posters = [{'poster_id': 10420, 'instance_id': 470, 'star': 1}]
+        pack = {'items': [
+            {'main_item': {'item_id': 1111, 'item_tag': 'EBagItemTag_Armor',
+                           'armor': {'armor_id': 2415004, 'instance_id': 1111, 'level': 91}}},
+            {'main_item': {'item_id': 470, 'item_tag': 'EBagItemTag_Poster',
+                           'poster': {'poster_id': 10420, 'instance_id': 470, 'star': 1}}},
+        ]}
+        source = self.package(main, {
+            'json/00002_s2c_1404_GetArmorRsp.json': json.dumps({'armors': armors}),
+            'json/00003_s2c_1406_GetPosterRsp.json': json.dumps({'posters': posters}),
+            'json/00004_s2c_1400_PackNotice.json': json.dumps(pack),
+        }, name='pack-instance-outer-id.zip')
+        result = capture_import.import_capture(source, self.profile, 777)
+        self.assertEqual(result['uid'], 777)
+        with closing(sqlite3.connect(self.database)) as connection:
+            payload = json.loads(gzip.decompress(connection.execute(
+                'SELECT bin_data FROM of_game WHERE user_id=777').fetchone()[0]))
+        self.assertEqual(payload['item']['itemArmorMap']['1111']['itemId'], 2415004)
+        self.assertEqual(payload['item']['itemPosterMap']['470']['itemId'], 10420)
+
     def test_unknown_fallback_is_refused_unless_explicitly_allowed(self):
         main = main_data(777)
         main['characters'][0]['character_appearance'] = {'field_99': 123}
@@ -451,6 +507,120 @@ class FieldConflictTests(SecurityTestCase):
     def test_placeholder_scan_fails_closed_when_budget_is_exhausted(self):
         with self.assertRaisesRegex(ValueError, 'too complex'):
             capture_import.placeholder_hits({'field_1': 1}, [0])
+
+    def test_character_skill_list_normalizes_without_field_collision(self):
+        main = main_data(777)
+        main['characters'][0]['character_skill_list'] = [{'skill_id': 1, 'skill_level': 3}]
+        source = self.package(main, name='skills.zip')
+        capture_import.import_capture(source, self.profile, 777)
+        with closing(sqlite3.connect(self.database)) as connection:
+            payload = json.loads(gzip.decompress(connection.execute(
+                'SELECT bin_data FROM of_game WHERE user_id=777').fetchone()[0]))
+        skills = payload['character']['characterMap']['101001']['characterSkillList']
+        self.assertEqual(skills['1']['skillLevel'], 3)
+        main2 = main_data(778)
+        main2['characters'][0]['character_skill_list'] = [{'skill_id': 1, 'skill_level': 3}]
+        main2['characters'][0]['characterSkillList'] = {'1': {'skill_id': 1, 'skill_level': 3}}
+        bad_source = self.package(main2, name='skills-conflict.zip')
+        with self.assertRaisesRegex(ValueError, r'conflicting .*field'):
+            capture_import.import_capture(bad_source, self.profile, 778)
+
+    def test_exploration_collections_moons_areas_and_boxes_import(self):
+        excel = self.profile / 'Resource/Excel'
+        excel.mkdir(parents=True)
+        (excel / 'Scene.json').write_text(json.dumps({
+            'Scene': {'Datas': [
+                {'ID': 1, 'AreaID': 1},
+                {'ID': 6, 'AreaID': 6},
+            ]},
+        }), encoding='utf-8')
+        (excel / 'Area.json').write_text(json.dumps({
+            'AreaData': {'Datas': [
+                {'ID': 1, 'AreaDataGroup': [
+                    {'AreaID': 1001, 'RelevancePoolID': 1001},
+                    {'AreaID': 1002, 'RelevancePoolID': 1002},
+                ]},
+                {'ID': 6, 'AreaDataGroup': [{'AreaID': 1001, 'RelevancePoolID': 1001}]},
+            ]},
+            'AreaRelationData': {'Datas': [
+                {'ID': 1001, 'AreaRelationDataGroup': [{'CollectFileID': 10101015}]},
+                {'ID': 1002, 'AreaRelationDataGroup': [{'CollectFileID': 10101001}]},
+            ]},
+        }), encoding='utf-8')
+        main = main_data(777)
+        files = {
+            'json/00002_s0_s2c_1998_GetCollectItemIdsRsp.json': json.dumps({
+                'status': 'StatusCode_OK',
+                'item_ids': [10801001, 10101015, 99999999],
+            }),
+            'json/00003_s0_s2c_2578_GetCollectMoonInfoRsp.json': json.dumps({
+                'status': 'StatusCode_OK',
+                'scene_id': 1,
+                'collected_moon_ids': [11001002, 11001001, 0],
+                'emotion_moons': [
+                    {'moon_id': 11101001, 'interacted': True},
+                    {'moon_id': 11101002, 'interacted': False},
+                ],
+            }),
+            'json/00004_s0_s2c_1899_CollectionRewardRsp.json': json.dumps({
+                'status': 'StatusCode_OK',
+                'collection_reward_data': {'item_id': 10101015, 'status': 'Reward'},
+            }),
+            'json/00005_s0_s2c_1016_SceneDataNotice.json': json.dumps({
+                'data': {
+                    'scene_id': 1,
+                    'scene_garden_data': {},
+                    'treasure_boxes': [
+                        {'index': 0, 'box_id': 101001, 'type': 1, 'state': 'TreasureBoxState_Open'},
+                    ],
+                },
+            }),
+            'json/00006_s0_s2c_1016_SceneDataNotice.json': json.dumps({
+                'data': {
+                    'scene_id': 9999,
+                    'channel_id': 888,
+                    'scene_garden_data': {'garden_name': 'Other', 'likes_num': 3},
+                    'collections': [
+                        {'type': 4, 'item_map': {'10499002': {'item_id': 10499002}}},
+                    ],
+                },
+            }),
+        }
+        source = self.package(main, files, name='exploration.zip')
+        result = capture_import.import_capture(source, self.profile, 777)
+        self.assertIn('scene exploration', result['restored'])
+        self.assertEqual(result['exploration'], {
+            'scenes': 1,
+            'collectionItems': 3,
+            'areas': 1,
+            'treasureBoxes': 1,
+            'moons': 2,
+        })
+        with closing(sqlite3.connect(self.database)) as connection:
+            payload = json.loads(gzip.decompress(connection.execute(
+                'SELECT bin_data FROM of_game WHERE user_id=777').fetchone()[0]))
+        scene_map = payload['scene']['sceneMap']
+        self.assertEqual(set(scene_map), {'1'})
+        scene1 = scene_map['1']
+        self.assertEqual(scene1['collections']['8']['itemMap']['10801001']['status'], 0)
+        self.assertEqual(scene1['collections']['1']['itemMap']['10101015']['status'], 1)
+        self.assertEqual(scene1['collections']['10']['collectedMoonIds'], [11001001, 11001002])
+        self.assertEqual(set(scene1['collections']['11']['itemMap']), {'11101001'})
+        self.assertEqual(scene1['treasureBoxs']['0']['boxId'], 101001)
+        self.assertEqual(scene1['treasureBoxs']['0']['state'], 1)
+        self.assertEqual(set(scene1['areaDatas']), {'1001'})
+        self.assertEqual(scene1['areaDatas']['1001']['areaState'], 1)
+
+    def test_exploration_rejects_oversized_resource_index(self):
+        excel = self.profile / 'Resource/Excel'
+        excel.mkdir(parents=True)
+        (excel / 'Scene.json').write_text('{"Scene":{"Datas":[]}}', encoding='utf-8')
+        (excel / 'Area.json').write_text('{"AreaData":{"Datas":[]}}', encoding='utf-8')
+        source = self.package(main_data(777), name='oversized-index.zip')
+        with patch.object(capture_import, 'MAX_INDEX_FILE_BYTES', 10):
+            with self.assertRaisesRegex(ValueError, 'Index file exceeds size limit'):
+                capture_import.import_capture(source, self.profile, 777)
+        self.assert_no_save()
 
 
 if __name__ == '__main__':
