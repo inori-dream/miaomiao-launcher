@@ -1,4 +1,4 @@
-﻿import contextlib
+import contextlib
 import io
 import json
 from pathlib import Path
@@ -176,18 +176,18 @@ print(json.dumps({'code': library.SDKLogin(callback), 'messages': messages}))
 """
         for value in ('0', '4294967296', '10000000000', 'abc', '-1', ' 1000000'):
             environment = dict(os.environ, LOLO_SDK_UID=value)
-            result = subprocess.run([sys.executable, '-c', script], cwd=Path(__file__).parent,
+            result = subprocess.run([sys.executable, '-c', script], cwd=Path(__file__).resolve().parent.parent,
                                     env=environment, capture_output=True, text=True, check=True)
             payload = json.loads(result.stdout)
             self.assertEqual(payload['code'], -1, value)
             self.assertEqual(payload['messages'], [], value)
         environment = dict(os.environ)
         environment.pop('LOLO_SDK_UID', None)
-        result = subprocess.run([sys.executable, '-c', script], cwd=Path(__file__).parent,
+        result = subprocess.run([sys.executable, '-c', script], cwd=Path(__file__).resolve().parent.parent,
                                 env=environment, capture_output=True, text=True, check=True)
         self.assertEqual(json.loads(result.stdout)['code'], -1)
         environment['LOLO_SDK_UID'] = '4294967295'
-        result = subprocess.run([sys.executable, '-c', script], cwd=Path(__file__).parent,
+        result = subprocess.run([sys.executable, '-c', script], cwd=Path(__file__).resolve().parent.parent,
                                 env=environment, capture_output=True, text=True, check=True)
         payload = json.loads(result.stdout)
         self.assertEqual(payload['code'], 0)
