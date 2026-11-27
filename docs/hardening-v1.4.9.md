@@ -1,6 +1,6 @@
 # 本地加固版 v1.4.9
 
-本页描述 `lab/v1.3.0-hardening` 分支在官方 v1.4.9 基础上的本地加固。它不是上游已合并版本，也不代表已经发布。
+本页描述 `lab/v1.4.9-hardening` 分支在官方 v1.4.9 基础上的本地加固。它不是上游已合并版本，也不代表已经发布。
 
 ## 客户端隔离
 
@@ -37,8 +37,8 @@
 ## 验证
 
 - `build_all.bat`：CN/EN/SDK 构建报告 `passed=true`。
-- 产物哈希：`C:\OverFieldLab\runtime\launcher-build-final\SHA256SUMS.txt`；构建报告 `passed=true`，可复现构建 PASS。
-- Python 全量回归：`394 tests OK (skipped=3)`；导入经济恢复另有 `13 tests OK`，失败矩阵 `18 tests OK`。联合证据见 `C:\OverFieldLab\docs\VERIFICATION.md`。
+- 产物哈希：`C:\OverFieldLab\runtime\launcher-build-final\SHA256SUMS.txt`；构建报告 `passed=true`，可复现构建 PASS。2026-11-27 干净提交树复跑得到相同三件产物哈希，证据保存在本机 `C:\OverFieldLab\evidence\clean-rebuild-20261127\`，不随源码分发。
+- Python 全量回归：`406 tests OK (skipped=3)`；导入经济恢复另有 `13 tests OK`，失败矩阵 `18 tests OK`。联合证据见 `C:\OverFieldLab\docs\VERIFICATION.md`（本机历史证据，不随源码分发）。
 
 ## 限制
 

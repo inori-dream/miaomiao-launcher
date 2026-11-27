@@ -50,7 +50,7 @@ runtime/capture.log                 采集日志
 
 ## 依赖
 
-需要 `backup-tool/`（已更新到 1.0.9，含 Wi-Fi 帧兼容修复）以及 TShark。免配置便携包自带 Python 运行时与 TShark；自行部署时设置 `OVERFIELD_TSHARK` 或把 TShark 放到 `backup-tool/tools/tshark/`。
+需要 `backup-tool/`（当前为 1.0.12-launcher-integration，包含 1.0.9 的 Wi-Fi 帧兼容修复）以及 TShark。免配置便携包自带 Python 运行时与 TShark；自行部署时设置 `OVERFIELD_TSHARK` 或把 TShark 放到 `backup-tool/tools/tshark/`。
 
 检查环境：
 
@@ -93,7 +93,7 @@ PktMon 原生输出按 UTF-8 读取，不再依赖 PowerShell 5.1 宿主的 GBK 
 ## 测试
 
 ```powershell
-python -m unittest test_pktmon_encoding test_official_launcher test_official_import test_launcher -v
+python -m unittest tests.test_pktmon_encoding tests.test_official_launcher tests.test_official_import tests.test_launcher -v
 ```
 
 `test_official_import` 使用合成数据覆盖：采集 UID 优先、缺失时回退登录 UID、显示 UID 优先于内部 ID、冲突拒绝写入、导入后其他账号不受影响、ZIP 路径安全。

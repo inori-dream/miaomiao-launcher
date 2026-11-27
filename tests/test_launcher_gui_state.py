@@ -62,6 +62,11 @@ class GuiStateContract {
  static void Main(string[] args){
   bool english=args[1]=="EN";
   var assembly=Assembly.LoadFrom(args[0]);
+  if(english){
+   var loc=assembly.GetType("OverFieldLocal.Loc",true);var translate=loc.GetMethod("S",BindingFlags.Public|BindingFlags.Static);
+   string translated=(string)translate.Invoke(null,new object[]{"抓包启动失败（7）：synthetic"});
+   Need(translated.StartsWith("Capture failed to start (7") && translated.Contains("synthetic"),"English capture error fallback missing: "+translated);
+  }
   var formType=assembly.GetType("OverFieldLocal.LauncherForm",true);
   var statusType=assembly.GetType("OverFieldLocal.ServiceStatus",true);
   var resultType=assembly.GetType("OverFieldLocal.Result",true);
@@ -97,6 +102,9 @@ class GuiStateContract {
   var form=NewForm(assembly,root,"steam");
   var badge=(Label)formType.GetField("badge",BindingFlags.Instance|BindingFlags.NonPublic).GetValue(form);
   badge.Text="sentinel";
+  var updateA11y=formType.GetMethod("UpdateDynamicAccessibility",BindingFlags.Instance|BindingFlags.NonPublic);
+  updateA11y.Invoke(form,null);
+  Need(badge.AccessibleDescription=="sentinel","Dynamic status is not exposed to assistive technology");
   var apply=formType.GetMethod("TryApplyStatus",BindingFlags.Instance|BindingFlags.NonPublic);
   Need(!(bool)apply.Invoke(form,new object[]{"solo",Status(statusType,"solo",true,true)}),"Previous mode repainted current mode");
   Need(badge.Text=="sentinel","Stale status changed the badge");
@@ -191,6 +199,12 @@ class LauncherGuiStateTests(unittest.TestCase):
                                  str(self.root / edition)], capture_output=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr.decode('utf-8', errors='replace'))
         self.assertIn(b'PASS', result.stdout)
+
+    def test_mode_selection_and_tab_order_have_accessibility_metadata(self):
+        source = (ROOT / 'Launcher.cs').read_text(encoding='utf-8-sig')
+        self.assertIn('button.AccessibleRole = AccessibleRole.RadioButton', source)
+        self.assertIn('order[i].TabIndex = i', source)
+        self.assertIn('AccessibleDescription = Loc.S("单机模式")', source)
 
     def test_chinese_state_results_and_accessibility(self):
         self.check('CN')

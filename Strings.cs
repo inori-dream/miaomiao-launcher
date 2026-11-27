@@ -1,5 +1,6 @@
 // English string table. The Chinese build returns the original text; the
 // English build returns the translation for the same key.
+using System;
 using System.Collections.Generic;
 
 namespace OverFieldLocal
@@ -222,7 +223,7 @@ namespace OverFieldLocal
             { "服务控制程序未返回结果，请查看运行记录。", "The service controller returned nothing; see the run log." },
             { "服务端", "Server" },
             { "未启动", "Not started" },
-            { "未找到 Python，请在 launcher.settings.json 中设置 pythonExe。", "Python was not found. Set pythonExe in launcher.settings.json." },
+            { "未找到 Python，请在 launcher.settings.json 中设置 pythonExe。", "Python was not found. Set pythonExe in the launcher settings file." },
             { "未获得账号数据，可重新采集。", "No account data was obtained; capture again." },
             { "未采集时的操作建议", "What to do about missing items" },
             { "本 地 世 界", "L O C A L  W O R L D" },
@@ -375,12 +376,41 @@ namespace OverFieldLocal
             { "采集进度", "Capture progress" },
             { "采集项目清单", "Capture checklist" },
             { "账号 ZIP 导出结果无效，请重试。", "The account ZIP export result is invalid. Please retry." },
+            { "已选中", "Selected" },
+            { "抓包启动失败（", "Capture failed to start (" },
+            { "抓包程序提前退出（", "The capture process exited early (" },
+            { "抓包程序返回无效就绪信号，公服未启动。", "The capture process returned an invalid ready signal; the official client was not started." },
+            { "等待抓包启动超时，公服未启动。请查看采集日志。", "Timed out waiting for capture; the official client was not started. See the capture log." },
+            { "已有采集正在进行，请先结束当前采集。", "A capture is already running; finish it first." },
+            { "请先停止私服服务，再开始公服采集，避免流量混入私服。", "Stop private services before official capture to avoid mixing traffic." },
+            { "无法开始采集：", "Cannot start capture: " },
+            { "当前采集仍在进行，请先由用户结束采集。", "Capture is still running; finish it first." },
+            { "没有可恢复的采集会话。", "No capture session is available to recover." },
+            { "采集会话路径不属于当前启动器。", "The capture session path does not belong to this launcher." },
+            { "没有找到完整的已解码产物，原始文件已保留。", "No complete decoded output was found; raw files were kept." },
+            { "采集会话已变化，未改写状态。", "The capture session changed; state was not overwritten." },
+            { "当前没有采集会话或可恢复的完成产物。", "No capture session or recoverable output is available." },
+            { "当前没有进行中的采集，也没有可恢复的完成产物。", "No capture is running and no recoverable output is available." },
+            { "无法确认采集进程身份；停止信号已保留", "Could not confirm the capture process identity; the stop signal was kept" },
+            { "无法确认采集进程身份，未自动停止或解包；请检查采集日志。", "Could not confirm the capture process identity; nothing was stopped or unpacked. Check the capture log." },
+            { "解码失败：", "Decode failed: " },
+            { "解码未生成完整产物；原始抓包及已有输出已保留。", "Decode did not produce complete output; the raw capture and existing output were kept." },
+            { "请选择要交付的账号ZIP及保存位置。", "Select the account ZIP and destination to deliver." },
+            { "缺少采集脚本", "Capture script is missing" },
+            { "系统缺少 PktMon", "PktMon is missing" },
+            { "采集需要管理员权限", "Capture requires administrator rights" },
         };
         public static string S(string text)
         {
             if (!English || text == null) return text;
             string value;
-            return Map.TryGetValue(text, out value) ? value : text;
+            if (Map.TryGetValue(text, out value)) return value;
+            string bestKey = null, bestValue = null;
+            foreach (var pair in Map)
+                if (text.StartsWith(pair.Key, StringComparison.Ordinal) &&
+                    (bestKey == null || pair.Key.Length > bestKey.Length))
+                { bestKey = pair.Key; bestValue = pair.Value; }
+            return bestKey == null ? text : bestValue + text.Substring(bestKey.Length);
         }
     }
 }

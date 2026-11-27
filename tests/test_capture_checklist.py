@@ -44,6 +44,12 @@ class ChecklistTests(unittest.TestCase):
         self.event('PackNotice',{'items':[{'main_item':{'weapon':{'instance_id':42}}}]})
         self.event('GetWeaponRsp',{'status':2,'weapons':[{'instance_id':42}]})
         self.assertEqual(self.items(phase='complete',readable=True)['weapon']['state'],'partial')
+    def test_equipment_warning_has_english_text_without_explicit_override(self):
+        self.event('PackNotice',{'items':[{'main_item':{'weapon':{'instance_id':42}}}]})
+        data=checklist.report(self.counts,self.empty,phase='complete',readable=True)
+        self.assertIn('GetWeaponRsp',data['warning'])
+        self.assertIn('GetWeaponRsp',data['warningEn'])
+        self.assertIn('equipped instance IDs',data['warningEn'])
     def test_city_scene_does_not_count_as_home(self):
         self.event('SceneDataNotice',{'data':{'scene_id':1001}})
         self.assertEqual(self.items(readable=True)['garden']['state'],'waiting')

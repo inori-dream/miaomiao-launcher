@@ -505,8 +505,10 @@ namespace OverFieldLocal
                 {
                     var parsed = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(message);
                     if (parsed.ContainsKey("error")) message = Convert.ToString(parsed["error"]);
+                    if (Loc.English && parsed.ContainsKey("errorEn")) message = Convert.ToString(parsed["errorEn"]);
                 }
                 catch { }
+                message = Loc.S(message);
                 throw new InvalidOperationException(message.Length > 0 ? message : Loc.S("公服采集操作失败。"));
             }
             return new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(result.Output);
@@ -527,8 +529,10 @@ namespace OverFieldLocal
                 {
                     var parsed = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(message);
                     if (parsed.ContainsKey("error")) message = Convert.ToString(parsed["error"]);
+                    if (Loc.English && parsed.ContainsKey("errorEn")) message = Convert.ToString(parsed["errorEn"]);
                 }
                 catch { }
+                message = Loc.S(message);
                 throw new InvalidOperationException(message.Length > 0 ? message : Loc.S("账号入库失败。"));
             }
             return new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(result.Output);
@@ -538,13 +542,13 @@ namespace OverFieldLocal
             string arguments = "-X utf8 " + Quote(Path.Combine(BaseDir, "capture_import.py")) + " " + action + " --file " + Quote(path) + " --profile " + Quote(ProfilePath) + " --uid " + uid.ToString();
             if (replace) arguments += " --replace";
             var result = Execute(Python, arguments);
-            if (result.Code != 0) throw new InvalidOperationException(result.Error);
+            if (result.Code != 0) throw new InvalidOperationException(Loc.S(result.Error));
             return new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(result.Output);
         }
         public void PrepareProfile()
         {
             var result = Execute(Python, "-X utf8 " + Quote(Path.Combine(BaseDir, "profile_manager.py")) + " prepare --root " + Quote(Root) + " --base " + Quote(Path.Combine(BaseDir, "profiles")) + " --mode " + Mode + " --host " + Quote(Mode != "host" ? "127.0.0.1" : HostAddress));
-            if (result.Code != 0) throw new InvalidOperationException(result.Error);
+            if (result.Code != 0) throw new InvalidOperationException(Loc.S(result.Error));
         }
         public void FocusClient()
         {
@@ -862,7 +866,7 @@ namespace OverFieldLocal
         }
         void ConfigureAccessibility()
         {
-            AccessibleName = Text;
+            AccessibleName = Loc.S("开放空间 · 本地启动器");
             AccessibleDescription = Loc.S("选择运行模式，查看服务状态并管理本地游戏与存档。");
             logs.AccessibleName = Loc.S("运行记录"); logs.AccessibleDescription = Loc.S("只读操作与错误记录");
             rootPath.AccessibleName = Loc.S("游戏目录"); officialLauncherPath.AccessibleName = Loc.S("公服启动器路径");
@@ -870,6 +874,31 @@ namespace OverFieldLocal
             captureChecklist.AccessibleName = Loc.S("采集项目清单"); captureHint.AccessibleName = Loc.S("采集提示");
             captureProgressHint.AccessibleName = Loc.S("采集进度"); badge.AccessibleName = Loc.S("状态");
             profileLabel.AccessibleName = Loc.S("独立数据目录");
+            foreach (var button in new[] { soloMode, steamMode, hostMode, captureMode })
+                button.AccessibleRole = AccessibleRole.RadioButton;
+            var order = new Control[] { soloMode, steamMode, hostMode, captureMode, rootPath, browse, uidBox, hostBox,
+                start, services, stop, importData, backupData, openData, firewall, roomsButton,
+                officialLauncherPath, officialBrowse, capturePreflight, captureStart, captureStop, captureSaveZip,
+                captureChecklist, logs };
+            for (int i = 0; i < order.Length; i++) order[i].TabIndex = i;
+            UpdateDynamicAccessibility();
+        }
+        void UpdateDynamicAccessibility()
+        {
+            if (badge != null) badge.AccessibleDescription = badge.Text;
+            if (captureHint != null) captureHint.AccessibleDescription = captureHint.Text;
+            if (captureProgressHint != null) captureProgressHint.AccessibleDescription = captureProgressHint.Text;
+            if (profileLabel != null) profileLabel.AccessibleDescription = profileLabel.Text;
+            if (logs != null) logs.AccessibleDescription = Loc.S("只读操作与错误记录") + " " + logs.Text;
+            UpdateModeAccessibility();
+        }
+        void UpdateModeAccessibility()
+        {
+            if (soloMode == null) return;
+            soloMode.AccessibleDescription = Loc.S("单机模式") + (backend.Mode == "solo" && !captureMode.Primary ? " · " + Loc.S("已选中") : "");
+            steamMode.AccessibleDescription = Loc.S("国际服") + (backend.Mode == "steam" && !captureMode.Primary ? " · " + Loc.S("已选中") : "");
+            hostMode.AccessibleDescription = Loc.S("局域网服务") + (backend.Mode == "host" && !captureMode.Primary ? " · " + Loc.S("已选中") : "");
+            captureMode.AccessibleDescription = Loc.S("公服采集") + (captureMode.Primary ? " · " + Loc.S("已选中") : "");
         }
         internal static string PrivateWorldBlockReason(bool captureRunning)
         { return captureRunning ? Loc.S("公服采集进行中，请先结束采集，再操作私服服务或切换模式。") : ""; }
@@ -1022,7 +1051,7 @@ namespace OverFieldLocal
                 if(closing) return;
                 RenderCaptureProgress(data);
             } catch(Exception error) { if(!closing) captureProgressHint.Text=Loc.S("项目状态暂不可读：")+Friendly.Describe(error,"采集进度"); }
-            finally { checkingCaptureProgress=false; }
+            finally { checkingCaptureProgress=false; UpdateDynamicAccessibility(); }
         }
         void RenderCaptureProgress(Dictionary<string,object> data)
         {
@@ -1043,7 +1072,7 @@ namespace OverFieldLocal
                 object live=data.ContainsKey("livePackets")?data["livePackets"]:null;
                 string packets=live!=null && Convert.ToInt64(live)>0 ? Loc.S(" · PktMon 已记录 ")+String.Format("{0:N0}",Convert.ToInt64(live))+Loc.S(" 个数据包") : "";
                 captureProgressHint.Text=(String.IsNullOrWhiteSpace(warning)?Loc.S("最近核对：")+stamp:warning)+packets;
-            } finally { captureChecklist.EndUpdate(); }
+            } finally { captureChecklist.EndUpdate(); UpdateDynamicAccessibility(); }
         }
         async Task<bool> SaveCaptureZip(string zip)
         {
@@ -1133,6 +1162,7 @@ namespace OverFieldLocal
             steamMode.Primary = !show && backend.Mode == "steam";
             hostMode.Primary = !show && backend.Mode == "host";
             captureMode.Invalidate(); soloMode.Invalidate(); steamMode.Invalidate(); hostMode.Invalidate();
+            UpdateModeAccessibility();
         }
         void ApplyMode()
         {
@@ -1154,6 +1184,7 @@ namespace OverFieldLocal
             firewall.Enabled=backend.Mode=="host";
             services.Text=backend.Mode=="host" ? Loc.S("启动服务") : Loc.S("仅启动服务");
             uidBox.Value=backend.Uid;
+            UpdateModeAccessibility();
         }
         async Task SwitchMode(string mode)
         {
@@ -1248,6 +1279,7 @@ namespace OverFieldLocal
             string friendly = Friendly.Describe(error, action);
             Append(friendly + "  " + Loc.S("详细原因：") + Friendly.Detail(error));
             if (showHint && !closing) captureHint.Text = friendly;
+            UpdateDynamicAccessibility();
         }
         void Append(string message)
         {
@@ -1255,6 +1287,7 @@ namespace OverFieldLocal
             string line = "[" + DateTime.Now.ToString("HH:mm:ss") + "]  " + message + Environment.NewLine;
             if (logs.TextLength > 45000) logs.Text = logs.Text.Substring(logs.TextLength - 25000);
             logs.AppendText(line); logs.SelectionStart = logs.TextLength; logs.ScrollToCaret();
+            UpdateDynamicAccessibility();
             try { Directory.CreateDirectory(Path.Combine(backend.BaseDir, "runtime")); File.AppendAllText(Path.Combine(backend.BaseDir, "runtime", "launcher.log"), line, new UTF8Encoding(false)); }
             catch { }
         }
@@ -1277,6 +1310,7 @@ namespace OverFieldLocal
             browse.Enabled = !value && lastStatus != null && !lastStatus.ServerRunning && !lastStatus.ProxyRunning;
             if (value) { badge.Text = text; badge.ForeColor = Theme.Accent; start.Text = Loc.S("正在处理…"); }
             else start.Text = StartButtonText(backend.Mode,lastStatus);
+            UpdateDynamicAccessibility();
         }
         async Task RefreshStatus()
         {
@@ -1326,6 +1360,7 @@ namespace OverFieldLocal
             if(backend.Mode=="host") gateway.UpdateState(status.GatewayListening,status.GatewayListening ? Loc.S("局域网地址 · ")+status.Target : Loc.S("等待发布局域网服务"));
             firewall.Text=backend.Mode=="host" && status.FirewallConfigured ? Loc.S("权限已配置") : Loc.S("局域网权限");
             firewall.Enabled=!captureRunning && backend.Mode=="host";
+            UpdateDynamicAccessibility();
         }
         async Task Operate(string action, bool launch)
         {

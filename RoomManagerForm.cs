@@ -97,7 +97,9 @@ namespace OverFieldLocal
             Text=create?Loc.S("创建房间"):Loc.S("设置人数上限");Font=Theme.Font(10);BackColor=Theme.Panel;ForeColor=Theme.Text;ClientSize=new Size(460,290);FormBorderStyle=FormBorderStyle.FixedDialog;MaximizeBox=false;MinimizeBox=false;StartPosition=FormStartPosition.CenterParent;
             var layout=new TableLayoutPanel { Dock=DockStyle.Fill,Padding=new Padding(20),ColumnCount=2,RowCount=4 };layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,160));layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));foreach(int h in new[]{50,50,50,56})layout.RowStyles.Add(new RowStyle(SizeType.Absolute,h));Controls.Add(layout);
             name.Text=Loc.S("新房间");name.MaxLength=32;name.Dock=DockStyle.Fill;capacity.Minimum=1;capacity.Maximum=50;capacity.Value=20;capacity.Dock=DockStyle.Fill;scene.Maximum=999999;scene.Dock=DockStyle.Fill;
-            layout.Controls.Add(new Label { Text=Loc.S("房间名称"),AutoSize=true },0,0);layout.Controls.Add(name,1,0);layout.Controls.Add(new Label { Text=Loc.S("人数上限"),AutoSize=true },0,1);layout.Controls.Add(capacity,1,1);layout.Controls.Add(new Label { Text=Loc.S("场景（0 为默认）"),AutoSize=true },0,2);layout.Controls.Add(scene,1,2);
+            var nameLabel=new Label { Text=Loc.S("房间名称"),AutoSize=true };var capacityLabel=new Label { Text=Loc.S("人数上限"),AutoSize=true };var sceneLabel=new Label { Text=Loc.S("场景（0 为默认）"),AutoSize=true };
+            name.AccessibleName=nameLabel.Text;name.AccessibleDescription=Loc.S("房间名称");capacity.AccessibleName=capacityLabel.Text;capacity.AccessibleDescription=Loc.S("人数上限");scene.AccessibleName=sceneLabel.Text;scene.AccessibleDescription=Loc.S("场景（0 为默认）");
+            layout.Controls.Add(nameLabel,0,0);layout.Controls.Add(name,1,0);layout.Controls.Add(capacityLabel,0,1);layout.Controls.Add(capacity,1,1);layout.Controls.Add(sceneLabel,0,2);layout.Controls.Add(scene,1,2);
             name.Enabled=scene.Enabled=create;var confirm=new ActionButton(Loc.S("保存"),true) { DialogResult=DialogResult.OK,Dock=DockStyle.Fill,Margin=new Padding(0,8,0,0) };layout.Controls.Add(confirm,1,3);AcceptButton=confirm;
         }
     }

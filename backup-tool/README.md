@@ -42,4 +42,4 @@ Compress-Archive -LiteralPath '.\output\account_时间\export' -DestinationPath 
 
 仓库修改：允许显式指定 Python/TShark；使用 UTF-8 BOM 以兼容 Windows PowerShell 5.1；补充使用、隐私和数据导入说明。未执行真实抓包、官服登录或下载行为。
 
-测试：使用安装本目录依赖的 Python 执行仓库根目录 `test_backup_tool.py`，覆盖分帧、Snappy、登录请求剔除、登录响应令牌清理、双向流提取及家园导出。测试使用合成数据，不触发 PktMon。
+测试：使用安装本目录依赖的 Python 执行仓库根目录 `tests/test_backup_tool.py`，覆盖分帧、Snappy、登录请求剔除、登录响应令牌清理、双向流提取及家园导出。测试使用合成数据，不触发 PktMon。

@@ -1,5 +1,6 @@
 {
-  "toolVersion": "1.0.9",
+  "toolVersion": "1.0.12-launcher-integration",
+  "baseToolVersion": "1.0.9",
   "upstreamManifestVerified": true,
   "captureAdapter": "Launcher ReadyPath/StopFlag and UTF-8 native output retained",
   "wifiCompatibility": "pcap_compat.py from upstream 1.0.9, original capture preserved"

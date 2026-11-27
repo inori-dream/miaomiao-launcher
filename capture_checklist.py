@@ -115,9 +115,22 @@ def report(counts=None, empty=None, *, phase='idle', readable=False, warning='',
                       'count':count,'evidence':evidence,'hint':hint})
     if not warning:
         warning=equipment_warning(counts)
+        if warning and not warning_en:
+            warning_en=equipment_warning_en(counts)
     return {'phase':phase,'readable':readable,'updatedAt':updated or dt.datetime.now().isoformat(timespec='seconds'),
             'warning':warning,'warningEn':warning_en,'items':items,'counts':dict(counts),'emptyCounts':dict(empty),
             'livePackets':live_packets}
+
+
+def equipment_warning_en(counts):
+    if not counts:return ''
+    missing=[]
+    for group,list_name in (('weapon','GetWeaponRsp'),('armor','GetArmorRsp'),('poster','GetPosterRsp')):
+        if counts.get('@'+group) and not counts.get(list_name):missing.append(list_name)
+    if not missing:return ''
+    return ('Only bag snapshots were seen for weapons, armor, or posters; the '+
+            ', '.join(missing)+' response is missing. Most equipped instance IDs will not be in the import. '+
+            'Open and page through the corresponding equipment screens before capturing again.')
 
 
 def equipment_warning(counts):
@@ -261,8 +274,8 @@ def watch(capture_root):
     root = Path(capture_root).resolve(); live = root / 'live-progress'; live.mkdir(exist_ok=True)
     stop = root / 'live-progress-stop.flag'; target = live / 'progress.json'
     counts = Counter(); empty = Counter(); readable = False
-    scanned = set(); notice = '正在等待第一个落盘分段。'
-    atomic_json(target, report(phase='capturing', warning=notice))
+    scanned = set(); notice = '正在等待第一个落盘分段。'; notice_en = 'Waiting for the first capture segment to be written.'
+    atomic_json(target, report(phase='capturing', warning=notice, warning_en=notice_en))
     decoder = load_decoder(BASE / 'backup-tool')
     deadline = time.monotonic() + 4 * 3600
     while not stop.is_file() and time.monotonic() < deadline:
@@ -279,18 +292,22 @@ def watch(capture_root):
                         counts[key] += value
                         empty[key] += zero[key]
             if readable:
-                notice = ''
+                notice = ''; notice_en = ''
             elif fresh:
                 notice = '分段已落盘，但其中没有识别到游戏协议包；请确认登录后进入了场景。'
+                notice_en = 'A segment was written, but no game protocol packets were recognized. Confirm that you logged in and entered a scene.'
             elif live_packets:
                 notice = ('PktMon 已记录 ' + format(live_packets, ',') + ' 个数据包；'
                           '当前分段仍在缓冲，约十多秒后写入磁盘即可核对。')
+                notice_en = ('PktMon recorded ' + format(live_packets, ',') + ' packets; '
+                             'the current segment is still buffering and should be written in about ten seconds.')
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
             notice = '分段读取暂时失败，稍后自动重试；原始数据不受影响。'
+            notice_en = 'A segment could not be read yet. The launcher will retry; raw capture data is unaffected.'
         if stop.is_file():
             break
         atomic_json(target, report(counts, empty, phase='capturing', readable=readable,
-                                   warning=notice, live_packets=live_packets))
+                                   warning=notice, warning_en=notice_en, live_packets=live_packets))
         waited = 0.0
         while waited < 3.0:
             if stop.is_file():

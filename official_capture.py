@@ -463,6 +463,37 @@ def status() -> dict:
     }
 
 
+ERROR_EN = {
+    "抓包启动失败（": "Capture failed to start (",
+    "抓包程序提前退出（": "The capture process exited early (",
+    "抓包程序返回无效就绪信号，公服未启动。": "The capture process returned an invalid ready signal; the official client was not started.",
+    "等待抓包启动超时，公服未启动。请查看采集日志。": "Timed out waiting for capture; the official client was not started. See the capture log.",
+    "已有采集正在进行，请先结束当前采集。": "A capture is already running; finish it first.",
+    "请先停止私服服务，再开始公服采集，避免流量混入私服。": "Stop private services before official capture to avoid mixing traffic.",
+    "无法开始采集：": "Cannot start capture: ",
+    "当前采集仍在进行，请先由用户结束采集。": "Capture is still running; finish it first.",
+    "没有可恢复的采集会话。": "No capture session is available to recover.",
+    "采集会话路径不属于当前启动器。": "The capture session path does not belong to this launcher.",
+    "没有找到完整的已解码产物，原始文件已保留。": "No complete decoded output was found; raw files were kept.",
+    "采集会话已变化，未改写状态。": "The capture session changed; state was not overwritten.",
+    "当前没有采集会话或可恢复的完成产物。": "No capture session or recoverable output is available.",
+    "当前没有进行中的采集，也没有可恢复的完成产物。": "No capture is running and no recoverable output is available.",
+    "无法确认采集进程身份；停止信号已保留": "Could not confirm the capture process identity; the stop signal was kept",
+    "无法确认采集进程身份，未自动停止或解包；请检查采集日志。": "Could not confirm the capture process identity; nothing was stopped or unpacked. Check the capture log.",
+    "解码失败：": "Decode failed: ",
+    "解码未生成完整产物；原始抓包及已有输出已保留。": "Decode did not produce complete output; the raw capture and existing output were kept.",
+    "请选择要交付的账号ZIP及保存位置。": "Select the account ZIP and destination to deliver.",
+}
+
+
+def error_payload(error):
+    text = str(error)
+    english = text
+    for chinese, translated in ERROR_EN.items():
+        english = english.replace(chinese, translated)
+    return {"error": text, "errorEn": english}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["start", "stop", "status", "preflight", "validate-launcher", "export-zip", "recover", "progress"])
@@ -498,7 +529,7 @@ def main() -> int:
         print(json.dumps(result, ensure_ascii=False))
         return 0
     except (ValueError, OSError, subprocess.SubprocessError, zipfile.BadZipFile) as error:
-        print(json.dumps({"error": str(error)}, ensure_ascii=False))
+        print(json.dumps(error_payload(error), ensure_ascii=False))
         return 1
 
 

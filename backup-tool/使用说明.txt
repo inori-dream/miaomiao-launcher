@@ -2,7 +2,7 @@
 
 适合想保存自己官服角色进度、背包、染色或家园的玩家。每个人在自己的电脑上用自己的账号跑一遍，结果保存在本机。Windows 10/11 x64，使用原有的国服 PC 客户端。工具已带便携 Python、TShark 与解析依赖，抓包用 Windows 自带的 PktMon。
 
-当前版本：1.0.9 portable（Windows x64）。更新内容见 RELEASE-NOTES.txt。
+当前版本：1.0.12-launcher-integration（基于 1.0.9 portable，Windows x64）。更新内容见 RELEASE-NOTES.txt。
 备份和解析可直接使用内置工具；导入 of-ps 和本机转发的额外依赖见第四、五节。
 
 一、备份自己的账号
