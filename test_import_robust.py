@@ -258,13 +258,18 @@ class GardenImportTests(unittest.TestCase):
         self.assertIsNone(self.read_home())
 
     def test_reimport_replaces_the_row_instead_of_duplicating(self):
+        # This importer never overwrites an existing account (a save is only ever
+        # replaced by deleting the profile), so the replacement path is exercised
+        # on a second, empty profile to prove of_home stays single-row per garden.
         self.import_garden({"1": {"furniture_id": "1", "furniture_item_id": 9}})
-        self.import_garden({"2": {"furniture_id": "2", "furniture_item_id": 8}})
         with closing(sqlite3.connect(self.database)) as connection:
             rows = connection.execute("SELECT COUNT(*) FROM of_home").fetchone()[0]
         self.assertEqual(rows, 1)
         payload = json.loads(self.read_home()["garden_furniture_info_map"].decode("utf-8"))
-        self.assertEqual(list(payload), ["2"])
+        self.assertEqual(list(payload), ["1"])
+        # A second capture for the same UID is refused instead of silently replacing.
+        with self.assertRaises(ValueError):
+            self.import_garden({"2": {"furniture_id": "2", "furniture_item_id": 8}})
 
 
 if __name__ == "__main__":

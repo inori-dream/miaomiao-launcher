@@ -307,7 +307,12 @@ def result_from_export(export: Path, session: Path):
     result["quality"] = {key: summary[key] for key in (
         "successful_decode_count", "trailing_bytes_count", "tcp_gap_count",
         "decode_fallback_count") if key in summary}
-    result["incompleteStreams"] = int(summary.get("tcp_gap_count") or 0)
+    # Count every direction that hit a gap or an undecoded tail. The newer
+    # summaries expose incomplete_streams; older ones only have tcp_gap_count.
+    if isinstance(incomplete_streams, list):
+        result["incompleteStreams"] = len(incomplete_streams)
+    else:
+        result["incompleteStreams"] = int(summary.get("tcp_gap_count") or 0)
     return result
 
 

@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [ValidateSet('Account', 'Gardens')]
     [string]$Mode = 'Account',

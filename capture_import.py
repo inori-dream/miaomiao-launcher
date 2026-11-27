@@ -426,6 +426,82 @@ def ensure_uid(database, uid):
             raise
 
 
+def garden_vector(value):
+    """The server stores Vector3 as plain {"x","y","z"} int32 (no omitempty)."""
+    value = value if isinstance(value, dict) else {}
+    return {axis: as_int(value.get(axis)) for axis in ('x', 'y', 'z')}
+
+
+def build_garden(main, entries):
+    """Build the of_home row the Lolo server reads when a player enters their garden.
+
+    The server keeps the garden in its own table: of_home.garden_furniture_info_map
+    holds a sonic-serialised map[int64]*FurnitureDetailsInfo, and
+    placed_character_map a serialised []*ScenePlacedCharacter. Skipping this table
+    made every imported account show an empty garden no matter how much furniture
+    the capture carried, so the layout is rebuilt here from the player's own 9999
+    snapshot.
+    """
+    uid = as_int(main.get('player_label')) or as_int(main.get('player_id'))
+    internal = as_int(main.get('player_id')) or uid
+    if not uid:
+        return None
+
+    # The player's own garden is the 9999 snapshot whose channel is this account.
+    best = None
+    for notice in as_list(entries.get('SceneDataNotice')):
+        data = (notice or {}).get('data') if isinstance(notice, dict) else None
+        if not isinstance(data, dict) or as_int(data.get('scene_id')) != 9999:
+            continue
+        channel = as_int(data.get('channel_id'))
+        label = as_int(data.get('channel_label'))
+        if uid not in (channel, label) and internal not in (channel, label):
+            continue
+        garden = data.get('scene_garden_data')
+        garden = garden if isinstance(garden, dict) else {}
+        furniture = as_mapping(garden.get('garden_furniture_info_map'))
+        if best is None or len(furniture) > len(best[1]):
+            best = (data, furniture, garden)
+
+    if best is None:
+        return None
+    data, furniture, garden = best
+
+    items = {}
+    for key, detail in furniture.items():
+        if not isinstance(detail, dict):
+            continue
+        furniture_id = as_int(detail.get('furniture_id'), as_int(key))
+        if furniture_id <= 0:
+            continue
+        stored = {
+            'furnitureId': furniture_id,
+            'furnitureItemId': as_int(detail.get('furniture_item_id')),
+            'pos': garden_vector(detail.get('pos')),
+            'rotation': garden_vector(detail.get('rotation')),
+        }
+        layer = as_int(detail.get('layer_num'))
+        if layer:
+            stored['layerNum'] = layer
+        items[str(furniture_id)] = stored
+
+    placed = [character for character in as_list(data.get('placed_characters'))
+              if isinstance(character, dict)]
+
+    return {
+        'scene_id': 9999,
+        'garden_name': garden.get('garden_name') or '',
+        'likes_num': as_int(garden.get('likes_num')),
+        'access_player_num': as_int(garden.get('access_player_num')),
+        'left_like_num': as_int(garden.get('left_like_num')),
+        'is_open': 1 if garden.get('is_open') else 0,
+        'password': garden.get('password') or '',
+        'password_expire_time': as_int(garden.get('password_expire_time')),
+        'furniture': items,
+        'placed': placed,
+    }
+
+
 def _nonnegative_count(value, label: str) -> int:
     if value is None:
         return 0
@@ -658,6 +734,19 @@ def build_player(main, entries, report=None):
                 data = dict(captured, item_id=captured[id_key], item_type=tag, num=1, pack_type=0)
                 _put_unique(items[target], instance, model(kind, data), 'equipment instances')
     items['instanceIndex'] = greatest + 1
+    # Placed-furniture counts live in their own map; the server increments it via
+    # AddFurnitureItem and reports it through FurnitureItemInfo(), so an import that
+    # skips it makes every placed item look uncounted in the bag.
+    for entry in as_list(main.get('furniture_item_info')):
+        if not isinstance(entry, dict):
+            skipped += 1
+            continue
+        item_id = as_int(entry.get('item_id'))
+        if item_id <= 0:
+            skipped += 1
+            continue
+        items['furnitureItemMap'][str(item_id)] = model('FurnitureItemInfo', {
+            'itemId': item_id, 'num': as_int(entry.get('num'), 1)})
     variants = [
         ('weapon','itemWeaponMap','ItemWeaponInfo','weapon_id'),
         ('armor','itemArmorMap','ItemArmorInfo','armor_id'),
@@ -850,7 +939,8 @@ def _basic_values(main, uid: int, created: str, now: str) -> dict:
     }
 
 
-def _write_database(database: Path, uid: int, created: str, now: str, payload: bytes, basic: dict) -> None:
+def _write_database(database: Path, uid: int, created: str, now: str, payload: bytes, basic: dict,
+                    garden: dict = None) -> None:
     with closing(sqlite3.connect(database, timeout=10, isolation_level=None)) as connection:
         connection.execute('PRAGMA foreign_keys=ON')
         connection.execute('PRAGMA trusted_schema=OFF')
@@ -875,6 +965,37 @@ def _write_database(database: Path, uid: int, created: str, now: str, payload: b
                 f'INSERT INTO of_game_basic({",".join(names)}) VALUES({",".join("?" for _ in names)})',
                 list(values.values()),
             )
+            if garden is not None:
+                home_columns = {row[1] for row in connection.execute('PRAGMA table_info(of_home)')}
+                if {'user_id', 'scene_id', 'garden_furniture_info_map'} <= home_columns:
+                    row = {
+                        'user_id': uid,
+                        'scene_id': 9999,
+                        'garden_name': garden['garden_name'],
+                        'likes_num': garden['likes_num'],
+                        'access_player_num': garden['access_player_num'],
+                        'left_like_num': garden['left_like_num'],
+                        'is_open': garden['is_open'],
+                        'password': garden['password'],
+                        'password_expire_time': garden['password_expire_time'],
+                        # The server serialises with sonic and reads the column back
+                        # into map[int64]*FurnitureDetailsInfo, so this must be JSON.
+                        'garden_furniture_info_map': json.dumps(
+                            garden['furniture'], ensure_ascii=False, separators=(',', ':'),
+                        ).encode('utf-8'),
+                        'placed_character_map': json.dumps(
+                            garden['placed'], ensure_ascii=False, separators=(',', ':'),
+                        ).encode('utf-8'),
+                    }
+                    row = {key: value for key, value in row.items() if key in home_columns}
+                    keys = list(row)
+                    assignments = ','.join(
+                        f'{key}=excluded.{key}' for key in keys if key not in ('user_id', 'scene_id'))
+                    connection.execute(
+                        f'INSERT INTO of_home({",".join(keys)}) VALUES({",".join("?" for _ in keys)}) '
+                        f'ON CONFLICT(user_id,scene_id) DO UPDATE SET {assignments}',
+                        list(row.values()),
+                    )
             if account_state is not None:
                 _verify_account_state(connection, account_state, uid)
             connection.commit()
@@ -925,6 +1046,7 @@ def import_capture(path, profile, expected_uid, replace=False, allow_incomplete=
         created = _iso_timestamp(player.get('create_time'))
         basic = _basic_values(player, uid, created, now)
         reject_secrets(basic)
+        garden = build_garden(player, entries)
         backup = profile / 'backups' / f'before-import-{dt.datetime.now():%Y%m%d-%H%M%S-%f}.db'
         backup.parent.mkdir(parents=True, exist_ok=True)
         if _no_link(backup.parent):
@@ -951,8 +1073,11 @@ def import_capture(path, profile, expected_uid, replace=False, allow_incomplete=
         }
         if quality['skippedEntries']:
             result['skippedEntries'] = quality['skippedEntries']
+        if garden is not None:
+            result['garden'] = {'sceneId': 9999, 'furniture': len(garden['furniture']),
+                                'placedCharacters': len(garden['placed'])}
         _write_staged_json(staged / 'import-report.json', result)
-        _write_database(database, uid, created, now, payload, basic)
+        _write_database(database, uid, created, now, payload, basic, garden)
         destination = profile / 'accounts' / str(uid)
         destination.parent.mkdir(parents=True, exist_ok=True)
         # Both paths are on the profile volume.  Rename publishes the complete
