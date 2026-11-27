@@ -2,6 +2,8 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <winhttp.h>
+#include <cerrno>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -55,11 +57,19 @@ static void log_call(const char* action) {
     FILE* file = nullptr; fopen_s(&file, path, "ab");
     if (file) { std::fprintf(file, "local-uid-sdk %s\n", action); std::fclose(file); }
 }
+static bool normalize_uid(const char* input, char* output, std::size_t size) {
+    if (!input || !*input || std::strlen(input) > 10) return false;
+    for (const char* p=input;*p;p++) if (*p<'0'||*p>'9') return false;
+    errno = 0;
+    char* end = nullptr;
+    unsigned long value = std::strtoul(input, &end, 10);
+    if (errno || !end || *end || value == 0 || value > UINT32_MAX) return false;
+    return std::snprintf(output, size, "%lu", value) > 0;
+}
 static int send(Callback callback, bool login) {
     char buffer[2048];
-    const char* uid = std::getenv("LOLO_SDK_UID");
-    if (!uid || !*uid) uid = "1000000";
-    for (const char* p=uid;*p;p++) if (*p<'0'||*p>'9') return -1;
+    char uid[16];
+    if (!normalize_uid(std::getenv("LOLO_SDK_UID"), uid, sizeof(uid))) return -1;
     if (login)
         std::snprintf(buffer, sizeof(buffer), "{\"code\":0,\"data\":{\"message\":\"local UID login\",\"accessToken\":\"local-session\",\"uid\":\"%s\",\"userName\":\"UID %s\",\"gameId\":\"13380\",\"channelId\":\"1008\",\"gameOpenId\":\"%s\",\"avatar\":\"\"}}", uid, uid, uid);
     else

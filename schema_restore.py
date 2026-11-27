@@ -1,8 +1,8 @@
-"""Restore protobuf fallback names (field_N) in already-decoded capture JSON.
+"""Restore proven protobuf fallback names in decoded capture JSON.
 
-The export in hand carries named fields where the schema matched, but keeps
-field_N where decoding fell back to raw wire parsing. Only names proven by the
-bundled schema are restored; everything else stays untouched and reported.
+Unknown fields are retained and reported.  A fallback that collides with an
+already named field is ambiguous and is rejected instead of silently choosing
+one value.
 """
 from __future__ import annotations
 
@@ -26,18 +26,37 @@ SCHEMAS = {
 }
 
 
+class FieldConflictError(ValueError):
+    """Two source fields claim the same destination field."""
+
+
+def _objects(value):
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        return list(value.values())
+    return []
+
+
 def restore(value, schema):
     """Rename field_N using one schema; unresolved entries are counted, not dropped."""
+    if not isinstance(value, dict):
+        raise FieldConflictError('Capture contains a malformed equipment object.')
     table = SCHEMAS[schema]
     restored = {}
     unresolved = 0
     for key, item in value.items():
+        if key in restored:
+            raise FieldConflictError('Capture contains conflicting equipment fields.')
         match = FALLBACK.match(key) if isinstance(key, str) else None
         if match:
             name = table.get(int(match.group(1)))
             if name is None:
                 unresolved += 1
+                restored[key] = item
                 continue
+            if name in restored:
+                raise FieldConflictError('Capture contains conflicting equipment fields.')
             restored[name] = item
         else:
             restored[key] = item
@@ -46,6 +65,8 @@ def restore(value, schema):
 
 def restore_item(main_item):
     """Restore the equipment variant nested in a PackNotice item."""
+    if not isinstance(main_item, dict):
+        raise FieldConflictError('Capture contains a malformed inventory item.')
     result = dict(main_item)
     total = 0
     for source, schema in (('weapon','weapon'), ('armor','armor'), ('poster','poster'),
@@ -55,9 +76,28 @@ def restore_item(main_item):
             continue
         cleaned, unresolved = restore(nested, schema)
         total += unresolved
-        if source == 'outfit' and isinstance(cleaned.get('dye_schemes'), dict):
-            cleaned['dye_schemes'], extra = restore(cleaned['dye_schemes'], 'dyeScheme')
-            total += extra
+        schemes = cleaned.get('dye_schemes') if source == 'outfit' else None
+        if isinstance(schemes, dict) and schemes and all(isinstance(v, dict) for v in schemes.values()):
+            schemes = list(schemes.values())
+        if isinstance(schemes, list):
+            restored_schemes = []
+            for scheme in schemes:
+                if isinstance(scheme, dict):
+                    scheme, extra = restore(scheme, 'dyeScheme')
+                    total += extra
+                    colors = scheme.get('colors')
+                    if isinstance(colors, dict) and colors and all(isinstance(v, dict) for v in colors.values()):
+                        colors = list(colors.values())
+                    if isinstance(colors, list):
+                        restored_colors = []
+                        for color in colors:
+                            if isinstance(color, dict):
+                                color, extra = restore(color, 'posColor')
+                                total += extra
+                            restored_colors.append(color)
+                        scheme['colors'] = restored_colors
+                restored_schemes.append(scheme)
+            cleaned['dye_schemes'] = restored_schemes
         result[source] = cleaned
     return result, total
 
@@ -66,24 +106,28 @@ def restore_capture(main, entries):
     """Apply restoration to a whole capture and report what remains unresolved."""
     unresolved = 0
     for packet in entries.get('PackNotice', []):
-        for detail in packet.get('items', []) or []:
+        if not isinstance(packet, dict):
+            raise FieldConflictError('Capture contains a malformed PackNotice response.')
+        for detail in _objects(packet.get('items')):
             if not isinstance(detail, dict):
                 continue
             item = detail.get('main_item')
             if isinstance(item, dict):
                 detail['main_item'], count = restore_item(item)
                 unresolved += count
-    for packet in entries.get('PackNotice', []):
-        for detail in packet.get('items', []) or []:
-            for extra in detail.get('extras', []) or []:
-                if isinstance(extra, dict):
-                    _, count = restore_item(extra)
-                    unresolved += count
+            extras = detail.get('extras')
+            if isinstance(extras, list):
+                for index, extra in enumerate(extras):
+                    if isinstance(extra, dict):
+                        extras[index], count = restore_item(extra)
+                        unresolved += count
     for packet in entries.get('PlayerMainDataRsp', []):
-        for character in packet.get('characters', []) or []:
+        if not isinstance(packet, dict):
+            raise FieldConflictError('Capture contains malformed player data.')
+        for character in _objects(packet.get('characters')):
             if not isinstance(character, dict):
                 continue
-            for preset in character.get('equipment_presets', []) or []:
+            for preset in _objects(character.get('equipment_presets')):
                 if not isinstance(preset, dict):
                     continue
                 for key, schema in (('armors','armorInfo'), ('posters','posterInfo')):
@@ -96,8 +140,7 @@ def restore_capture(main, entries):
                                 unresolved += count
                             renamed.append(value)
                         preset[key] = renamed
-            for preset in character.get('outfit_presets', []) or []:
+            for preset in _objects(character.get('outfit_presets')):
                 if isinstance(preset, dict):
-                    for key in [k for k in list(preset) if FALLBACK.match(str(k))]:
-                        preset.pop(key, None); unresolved += 1
+                    unresolved += sum(1 for key in preset if isinstance(key, str) and FALLBACK.match(key))
     return {'restoredUnresolved': unresolved}

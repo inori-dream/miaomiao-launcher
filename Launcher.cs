@@ -64,18 +64,50 @@ namespace OverFieldLocal
                 }
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
+                int previewIndex = Array.IndexOf(args, "--ui-preview");
+                string previewDir = previewIndex >= 0 && previewIndex + 1 < args.Length ? args[previewIndex + 1] : null;
                 Application.ThreadException += delegate(object sender, ThreadExceptionEventArgs e)
                 {
                     MessageBox.Show(Loc.S("操作未完成：") + Friendly.Describe(e.Exception, ""), Loc.S("开放空间启动器"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 };
-                var form = new LauncherForm(args);
-                Application.Run(form);
+                try
+                {
+                    var form = new LauncherForm(args);
+                    Application.Run(form);
+                }
+                catch (Exception error)
+                {
+                    if (previewDir == null) throw;
+                    bool complete = Native.PreviewComplete(previewDir);
+                    if (!complete) Native.WritePreviewError(previewDir, error);
+                    Environment.Exit(complete ? 0 : 3);
+                }
             }
         }
     }
 
     static class Native
     {
+        internal static bool PreviewComplete(string directory)
+        {
+            try
+            {
+                return Directory.Exists(directory)
+                    && Directory.GetFiles(directory, "*.png").Length > 0
+                    && Directory.GetFiles(directory, "*.json").Length > 0;
+            }
+            catch { return false; }
+        }
+        internal static void WritePreviewError(string directory, Exception error)
+        {
+            try
+            {
+                Directory.CreateDirectory(directory);
+                File.WriteAllText(Path.Combine(directory, "preview-error.txt"), error.ToString());
+            }
+            catch { }
+        }
+
         [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr handle);
         [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr handle, int command);
         public static void FocusLauncher()
@@ -132,7 +164,9 @@ namespace OverFieldLocal
             Text = text; Primary = primary; Font = Theme.Font(11, FontStyle.Bold); Cursor = Cursors.Hand;
             FlatStyle = FlatStyle.Flat; FlatAppearance.BorderSize = 0; BackColor = Theme.Bg; Dock = DockStyle.Fill;
             Margin = new Padding(0, 0, 12, 0); SetStyle(ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
+            AccessibleRole = AccessibleRole.PushButton; AccessibleName = text;
         }
+        protected override void OnTextChanged(EventArgs e) { AccessibleName = Text; base.OnTextChanged(e); }
         protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
         protected override void OnMouseLeave(EventArgs e) { hover = false; Invalidate(); base.OnMouseLeave(e); }
         protected override void OnPaint(PaintEventArgs e)
@@ -152,7 +186,7 @@ namespace OverFieldLocal
     {
         public string Caption, Detail = Loc.S("正在检查");
         public bool Online;
-        public StatusTile(string caption) { Caption = caption; DoubleBuffered = true; Dock = DockStyle.Fill; BackColor = Theme.Bg; Margin = new Padding(0, 0, 12, 0); }
+        public StatusTile(string caption) { Caption = caption; DoubleBuffered = true; Dock = DockStyle.Fill; BackColor = Theme.Bg; Margin = new Padding(0, 0, 12, 0); AccessibleRole = AccessibleRole.StatusBar; AccessibleName = caption; AccessibleDescription = Detail; }
         protected override void OnPaint(PaintEventArgs e)
         {
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
@@ -163,7 +197,7 @@ namespace OverFieldLocal
             using (var font = Theme.Font(10, FontStyle.Bold)) TextRenderer.DrawText(e.Graphics, Caption, font, new Rectangle(33, 10, Math.Max(1, Width - 47), 28), Theme.Text, TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
             using (var font = Theme.Font(9)) TextRenderer.DrawText(e.Graphics, Detail, font, new Rectangle(17, 41, Math.Max(1, Width - 34), Math.Max(1, Height - 48)), Theme.Muted, TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
         }
-        public void UpdateState(bool online, string detail) { Online = online; Detail = detail; Invalidate(); }
+        public void UpdateState(bool online, string detail) { Online = online; Detail = detail; AccessibleName = Caption; AccessibleDescription = detail; Invalidate(); }
     }
 
     class Result { public int Code; public string Output, Error; }
@@ -274,12 +308,30 @@ namespace OverFieldLocal
             {
                 ExecuteProcess(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe"), arguments, action == "Status" ? 12000 : ControlTimeoutMilliseconds, false, cancellation);
                 if (!File.Exists(resultPath)) throw new InvalidOperationException(Loc.S("服务控制程序未返回结果，请查看运行记录。"));
-                return new JavaScriptSerializer().Deserialize<Result>(File.ReadAllText(resultPath, Encoding.UTF8));
+                var result = new JavaScriptSerializer().Deserialize<Result>(File.ReadAllText(resultPath, Encoding.UTF8));
+                if (result == null) throw new InvalidOperationException(Loc.S("服务控制程序未返回有效结果，请查看运行记录。"));
+                result.Output = result.Output ?? ""; result.Error = result.Error ?? "";
+                return result;
             }
             finally { try { if (File.Exists(resultPath)) File.Delete(resultPath); } catch { } }
         }
         // An in-flight capture is a detached worker too. Ask it to finish and leave
         // it to flush its own trace; never block exit waiting for a long decode.
+        public bool CaptureActive()
+        {
+            if(CaptureStartInFlight) return true;
+            try
+            {
+                string statePath=Path.Combine(BaseDir,"runtime","capture-state.json");
+                if(!File.Exists(statePath)) return false;
+                var state=new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(File.ReadAllText(statePath,Encoding.UTF8));
+                if(state==null) return true;
+                bool active=state.ContainsKey("active") && Convert.ToBoolean(state["active"]);
+                string phase=state.ContainsKey("phase")?Convert.ToString(state["phase"]):"";
+                return active || phase=="starting" || phase=="stopping";
+            }
+            catch { return true; } // Unknown is not an inactive capture.
+        }
         public void StopCaptureQuietly()
         {
             try
@@ -326,10 +378,13 @@ namespace OverFieldLocal
                       RedirectStandardOutput = true, RedirectStandardError = true,
                       StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8 };
                     process.Start();
-                    var output = process.StandardOutput.ReadToEnd();
-                    process.StandardError.ReadToEnd();
-                    if (!process.WaitForExit(20000)) { try { process.Kill(); } catch { } return output; }
-                    return output;
+                    // Drain both pipes asynchronously: reading one to EOF before the
+                    // other can deadlock and make window close unbounded.
+                    var output = process.StandardOutput.ReadToEndAsync();
+                    var error = process.StandardError.ReadToEndAsync();
+                    if (!process.WaitForExit(20000)) { try { process.Kill(); } catch { } return ""; }
+                    if (!Task.WaitAll(new Task[] { output, error }, 2000)) return "";
+                    return output.Result;
                 }
             }
             catch { return ""; }
@@ -413,14 +468,13 @@ namespace OverFieldLocal
             // so swapping that DLL cannot move them to a private server.
             if (String.IsNullOrEmpty(clientExe)) return null;
             var plugins = Path.Combine(Path.GetDirectoryName(clientExe), "launcher_Data", "Plugins", "x86_64");
-            if (!Directory.Exists(plugins)) return null;
             // QuickSDK PC is a separate local adapter; TapTap DLL presence alone
             // does not identify the active channel (official QuickSDK also ships them).
             if (File.Exists(Path.Combine(Path.GetDirectoryName(clientExe), "launcher_Data", "Plugins", "Win", "PCSDK_release", "PCSDKUI.exe"))) return null;
             if (File.Exists(Path.Combine(plugins, "PCGameSDK.dll"))) return null;
             if (File.Exists(Path.Combine(plugins, "tapsdkcore.dll")) || File.Exists(Path.Combine(plugins, "taptap_api.dll")))
                 return "TapTap";
-            return null;
+            return "Unknown";
         }
         public void ValidateRoot(string root)
         {
@@ -512,10 +566,11 @@ namespace OverFieldLocal
         readonly ActionButton start = new ActionButton(Loc.S("启动游戏  →"), true), services = new ActionButton(Loc.S("启动服务")), stop = new ActionButton(Loc.S("停止服务")), browse = new ActionButton(Loc.S("更改目录"));
         readonly ActionButton capturePreflight = new ActionButton(Loc.S("预检查")), captureStart = new ActionButton(Loc.S("开始采集")), captureStop = new ActionButton(Loc.S("结束采集")), captureSaveZip = new ActionButton(Loc.S("保存账号 ZIP"));
         string lastCaptureZip = "";
+        bool lastCaptureIncomplete;
         readonly Label captureHint = new Label();
         readonly TextBox officialLauncherPath = new TextBox();
         readonly ActionButton officialBrowse = new ActionButton(Loc.S("选择启动器"));
-        bool captureRunning, checkingCaptureProgress;
+        bool captureRunning, checkingCaptureProgress, checkingCaptureState, captureStartInFlight;
         readonly ListView captureChecklist = new ListView();
         readonly Label captureProgressHint = new Label();
         readonly System.Windows.Forms.Timer captureProgressTimer = new System.Windows.Forms.Timer();
@@ -530,7 +585,7 @@ namespace OverFieldLocal
         readonly TextBox rootPath = new TextBox();
         readonly RichTextBox logs = new RichTextBox();
         readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
-        bool busy, checking, closing;
+        bool busy, checking, closing, operationCancellable;
         CancellationTokenSource operationCancellation;
         ServiceStatus lastStatus;
         string lastStatusError, smokePath;
@@ -553,6 +608,7 @@ namespace OverFieldLocal
             }
             if(uiPreview) { backend.HostAddress="192.168.1.10";backend.Uid=1000000;backend.Root=""; }
             BuildLayout();
+            ConfigureAccessibility();
             ApplyMode();
             ShowCapturePage(false);
             soloMode.Click += async delegate { await SwitchMode("solo"); };
@@ -585,11 +641,19 @@ namespace OverFieldLocal
             hostBox.SelectedIndexChanged += delegate { if (!busy && backend.Mode=="host" && hostBox.SelectedItem != null) { backend.HostAddress=hostBox.SelectedItem.ToString(); backend.Save(); } };
             captureStart.Click += async delegate
             {
-                if (busy || captureRunning) return;
-                if(String.IsNullOrWhiteSpace(backend.OfficialLauncherPath) && !await ChooseOfficialLauncher()) return;
-                SetBusy(true, Loc.S("正在预检查采集环境"));
+                // Claim the whole chooser/preflight/start chain, not just the
+                // subprocess call, so rapid clicks cannot launch two collectors.
+                if (busy || captureRunning || captureStartInFlight || uiPreview) return;
+                captureStartInFlight = true;
+                SetBusy(true, Loc.S("正在准备采集"));
                 try
                 {
+                    if(String.IsNullOrWhiteSpace(backend.OfficialLauncherPath))
+                    {
+                        if(!await ChooseOfficialLauncher(true)) return;
+                    }
+                    if(closing)return;
+                    SetBusy(true, Loc.S("正在预检查采集环境"));
                     var report = await Task.Run(() => backend.Official("preflight"));
                     if(closing)return;
                     Append(PreflightText(report));
@@ -611,8 +675,9 @@ namespace OverFieldLocal
                     var result = await Task.Run(() => backend.Official("start"));
                     backend.CaptureStartInFlight=false;
                     if(closing)return;
-                    captureRunning = true; lastCaptureZip = "";
-                    bool steam = result.ContainsKey("officialKind") && Convert.ToString(result["officialKind"])=="steam";
+                    if(!result.ContainsKey("officialKind")) throw new InvalidOperationException(Loc.S("采集启动结果不完整，请检查状态后重试。"));
+                    captureRunning = true; lastCaptureZip = ""; lastCaptureIncomplete = false;
+                    bool steam = Convert.ToString(result["officialKind"])=="steam";
                     Append(steam ? Loc.S("抓包已就绪，正在通过 Steam 启动客户端。公服路径未使用私服副本或本地UID。") : Loc.S("抓包已就绪，已启动配置的公服启动器。公服路径未使用私服副本或本地UID。"));
                     if (steam && result.ContainsKey("officialPid") && Convert.ToInt32(result["officialPid"])==0)
                         Append(Loc.S("Steam 正在启动游戏；如果它弹出登录或更新窗口，请先完成，进入游戏后开始加载要保存的界面。"));
@@ -625,13 +690,20 @@ namespace OverFieldLocal
             };
             captureStop.Click += async delegate
             {
-                if (busy) return;
+                if (busy || !captureRunning) return;
                 SetBusy(true, Loc.S("正在结束采集并生成账号 ZIP"));
                 try
                 {
                     var captured = await Task.Run(() => backend.Official("stop"));
                     captureRunning = false;
                     await RefreshCaptureProgress();
+                    string captureWarning = CaptureIncompleteWarning(captured);
+                    lastCaptureIncomplete = captureWarning.Length > 0;
+                    if (lastCaptureIncomplete)
+                    {
+                        Append(captureWarning);
+                        captureProgressHint.Text = captureWarning;
+                    }
                     string zip = captured.ContainsKey("accountZip") ? Convert.ToString(captured["accountZip"]) : "";
                     if (String.IsNullOrWhiteSpace(zip) || !System.IO.File.Exists(zip))
                     {
@@ -682,6 +754,7 @@ namespace OverFieldLocal
                         message = Loc.S("这个包的解码不完整（") + detail + Loc.S("）。\n导入后外观与装备可能为空，但账号、等级、角色会写入。\n\n仍要导入吗？");
                         Append(Loc.S("注意：包体解码不完整，装备与外观可能为空。"));
                     }
+                    if (captureWarning.Length > 0) message = captureWarning + "\n\n" + message;
                     if (MessageBox.Show(this, message, incomplete ? Loc.S("数据不完整，确认导入") : Loc.S("确认入库"), MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK) return;
                     if(!File.Exists(Path.Combine(backend.ProfilePath,"db","lolo.db")))
                         await Task.Run(() => backend.PrepareProfile());
@@ -693,6 +766,7 @@ namespace OverFieldLocal
                 }
                 catch (Exception error) { ReportError("账号入库", error, true); }
                 finally { SetBusy(false, ""); }
+                await RefreshCaptureState();
             };
             importData.Click += async delegate { await ImportCapture(); };
             backupData.Click += async delegate { await Operate("Backup", false); };
@@ -700,6 +774,7 @@ namespace OverFieldLocal
             firewall.Click += async delegate
             {
                 if (busy || backend.Mode != "host") return;
+                string blocked=PrivateOperationBlockReason(); if(blocked.Length>0) { Append(blocked); return; }
                 SetBusy(true,Loc.S("正在设置局域网权限"));
                 try { await Task.Run(() => { backend.PrepareProfile(); backend.EnableLanFirewall(); }); Append(Loc.S("已允许同一局域网访问当前服务。")); }
                 catch (Exception e) { ReportError("设置局域网权限", e, false); }
@@ -710,24 +785,34 @@ namespace OverFieldLocal
             services.Click += async delegate { await Operate("Start", false); };
             stop.Click += async delegate
             {
-                if (busy && operationCancellation != null) { stop.Enabled = false; operationCancellation.Cancel(); }
+                if (busy && operationCancellable && operationCancellation != null) { stop.Enabled = false; stop.Text = Loc.S("正在取消…"); operationCancellation.Cancel(); }
                 else await Operate("Stop", false);
             };
             browse.Click += BrowseRoot;
-            roomsButton.Click += delegate { using(var dialog=new RoomManagerForm(backend)) dialog.ShowDialog(this); };
+            roomsButton.Click += delegate { string blocked=PrivateOperationBlockReason(); if(blocked.Length>0)Append(blocked);else if(!busy) { using(var dialog=new RoomManagerForm(backend)) dialog.ShowDialog(this); } };
             timer.Interval = 5000; timer.Tick += async delegate { await RefreshStatus(); };
             captureProgressTimer.Interval=2500;
             captureProgressTimer.Tick+=async delegate { if(capturePage.Visible && !uiPreview) await RefreshCaptureProgress(); };
             Shown += async delegate
             {
                 if(uiPreview) {
-                    await Task.Delay(400);
-                    if(uiPage=="capture" || uiPage=="capture-return") ShowCapturePage(true);
-                    if(uiPage=="capture-return") {
-                        await SwitchMode(backend.Mode);
-                        if(capturePage.Visible) { Environment.ExitCode=2; Close(); return; }
+                    try
+                    {
+                        await Task.Delay(400);
+                        if(uiPage=="capture" || uiPage=="capture-return") ShowCapturePage(true);
+                        if(uiPage=="capture-return") {
+                            await SwitchMode(backend.Mode);
+                            if(capturePage.Visible) { SaveUIPreview(uiPreviewDir); Visible=false; Environment.Exit(2); return; }
+                        }
+                        await Task.Delay(150); SaveUIPreview(uiPreviewDir); Visible=false; Environment.Exit(0);
                     }
-                    await Task.Delay(150); SaveUIPreview(uiPreviewDir); Close(); return;
+                    catch (Exception error)
+                    {
+                        bool complete = Native.PreviewComplete(uiPreviewDir);
+                        if (!complete) Native.WritePreviewError(uiPreviewDir, error);
+                        Environment.Exit(complete ? 0 : 3);
+                    }
+                    return;
                 }
                 Append(Loc.S("启动器已就绪，正在读取本地服务状态。"));
                 await RefreshStatus(); if (closing) return; timer.Start(); captureProgressTimer.Start();
@@ -744,21 +829,92 @@ namespace OverFieldLocal
                 { ShowCapturePage(true);captureStart.PerformClick(); }
                 if (smokePath != null) { await Task.Delay(600); SaveSmoke(); }
             };
-            FormClosing += delegate(object sender, FormClosingEventArgs e)
+            FormClosing += async delegate(object sender, FormClosingEventArgs e)
             {
-                closing = true; timer.Stop(); timer.Dispose();
+                if (closing) return;
+                closing = true;
+                timer.Stop(); timer.Dispose();
                 captureProgressTimer.Stop(); captureProgressTimer.Dispose();
                 backend.CancelAll();
                 // Detached services would otherwise survive this process and keep
                 // holding 18080/18100. Reap only what this launcher started.
-                if (!updaterHandoff && !uiPreview && smokePath == null && e.CloseReason != CloseReason.WindowsShutDown)
-                {
-                    try { Cursor = Cursors.WaitCursor; backend.StopCaptureQuietly(); backend.Cleanup(); }
-                    catch { }
-                    finally { Cursor = Cursors.Default; }
-                }
+                //
+                // Only the asynchronous cleanup path may cancel the close. Every
+                // other reason must let the form close: the update handoff relies on
+                // this process exiting so the waiting helper can take over, a Windows
+                // shutdown must not be blocked, and the smoke run has to return.
+                bool needsCleanup = !updaterHandoff && !uiPreview && smokePath == null
+                    && e.CloseReason != CloseReason.WindowsShutDown;
+                if (!needsCleanup) return;
+                e.Cancel = true;
+                Enabled = false;
+                backend.StopCaptureQuietly();
+                // Cleanup runs off the UI thread and has a hard close deadline.
+                // A stuck controller must not freeze the window or block shutdown.
+                var shutdownDeadline = new System.Windows.Forms.Timer { Interval = 3000 };
+                shutdownDeadline.Tick += delegate { shutdownDeadline.Dispose(); Environment.Exit(0); };
+                shutdownDeadline.Start();
+                try { await Task.Run(() => backend.Cleanup()); }
+                catch { }
+                finally { shutdownDeadline.Dispose(); Environment.Exit(0); }
             };
             InitializeUpdater(args);
+        }
+        void ConfigureAccessibility()
+        {
+            AccessibleName = Text;
+            AccessibleDescription = Loc.S("选择运行模式，查看服务状态并管理本地游戏与存档。");
+            logs.AccessibleName = Loc.S("运行记录"); logs.AccessibleDescription = Loc.S("只读操作与错误记录");
+            rootPath.AccessibleName = Loc.S("游戏目录"); officialLauncherPath.AccessibleName = Loc.S("公服启动器路径");
+            uidBox.AccessibleName = "UID"; hostBox.AccessibleName = Loc.S("服务地址");
+            captureChecklist.AccessibleName = Loc.S("采集项目清单"); captureHint.AccessibleName = Loc.S("采集提示");
+            captureProgressHint.AccessibleName = Loc.S("采集进度"); badge.AccessibleName = Loc.S("状态");
+            profileLabel.AccessibleName = Loc.S("独立数据目录");
+        }
+        internal static string PrivateWorldBlockReason(bool captureRunning)
+        { return captureRunning ? Loc.S("公服采集进行中，请先结束采集，再操作私服服务或切换模式。") : ""; }
+        string PrivateOperationBlockReason()
+        { return PrivateWorldBlockReason(captureRunning || backend.CaptureActive()); }
+        internal static bool StatusMatchesMode(string requestedMode, ServiceStatus status)
+        { return status != null && String.Equals(requestedMode, status.Mode, StringComparison.OrdinalIgnoreCase); }
+        internal static string StartButtonText(string mode, ServiceStatus status)
+        {
+            if (mode == "host") return Loc.S("启动局域网服务  →");
+            if (status != null && status.ClientRunning) return Loc.S("返回游戏  →");
+            return mode == "steam" ? Loc.S("启动游戏  →") : Loc.S("启动单机游戏  →");
+        }
+        internal static string OperationSuccessMessage(string action, bool launch, Result result, ServiceStatus status, uint uid)
+        {
+            if (result == null) throw new InvalidOperationException(Loc.S("服务控制程序未返回有效结果，请查看运行记录。"));
+            if (result.Code != 0) throw new InvalidOperationException(!String.IsNullOrWhiteSpace(result.Error) ? result.Error : !String.IsNullOrWhiteSpace(result.Output) ? result.Output : Loc.S("操作失败：") + action);
+            if (status == null) throw new InvalidOperationException(Loc.S("操作后无法确认服务状态，请查看状态后重试。"));
+            if (action == "Stop")
+            {
+                if (status.ServerRunning || status.ProxyRunning || !String.IsNullOrEmpty(status.RuntimeMode))
+                    throw new InvalidOperationException(Loc.S("停止请求已返回，但状态检查仍显示服务正在运行。"));
+                return Loc.S("当前模式的服务已停止，原网络路线已恢复。");
+            }
+            if (action == "Backup")
+            {
+                if (String.IsNullOrWhiteSpace(result.Output)) throw new InvalidOperationException(Loc.S("备份请求已返回，但没有确认备份文件，请重试。"));
+                return Loc.S("备份已保存：") + result.Output;
+            }
+            if (action != "Start") throw new InvalidOperationException(Loc.S("未知服务操作：") + action);
+            if (!status.Ready) throw new InvalidOperationException(Loc.S("启动请求已返回，但服务尚未就绪。请查看各服务状态后重试。"));
+            if (launch && !status.ClientRunning) throw new InvalidOperationException(Loc.S("服务已就绪，但未检测到游戏客户端。请查看客户端日志后重试。"));
+            if (!launch) return Loc.S("本地服务与游戏线路已就绪。");
+            if (result.Output.IndexOf("Client already running", StringComparison.OrdinalIgnoreCase) >= 0) return Loc.S("游戏已经运行，已保留当前进度。");
+            return Loc.S("游戏已打开，使用本地 UID ") + uid + Loc.S(" 登录。");
+        }
+        internal static string CaptureIncompleteWarning(Dictionary<string,object> result)
+        {
+            if (result == null || !result.ContainsKey("incompleteStreams") || result["incompleteStreams"] == null) return "";
+            long count;
+            try { count = Convert.ToInt64(result["incompleteStreams"]); }
+            catch (FormatException) { return ""; }
+            catch (InvalidCastException) { return ""; }
+            catch (OverflowException) { return ""; }
+            return count > 0 ? Loc.S("检测到抓包缺口或未解析的流尾部，备份可能不完整；仍可保存已解码账号 ZIP。") : "";
         }
         string PreflightText(Dictionary<string,object> report, bool compact = false)
         {
@@ -878,10 +1034,11 @@ namespace OverFieldLocal
                     string status=Convert.ToString(row["state"]);
                     var view=new ListViewItem(Loc.S(Convert.ToString(row["label"])));
                     view.SubItems.Add(Loc.S(Convert.ToString(row["status"])));view.SubItems.Add(Convert.ToString(row["count"]));view.SubItems.Add(Loc.S(Convert.ToString(row["hint"])));
-                    view.ForeColor=status=="collected"?Color.FromArgb(36,128,100):status=="missing"?Color.FromArgb(168,99,38):Theme.Muted;
+                    view.ForeColor=status=="collected"?Color.FromArgb(36,128,100):(status=="missing" || status=="partial")?Color.FromArgb(168,99,38):Theme.Muted;
                     captureChecklist.Items.Add(view);
                 }
-                string warning=data.ContainsKey("warning")?Convert.ToString(data["warning"]):"";
+                string warningKey=Loc.English && data.ContainsKey("warningEn")?"warningEn":"warning";
+                string warning=data.ContainsKey(warningKey)?Loc.S(Convert.ToString(data[warningKey])):"";
                 string stamp=data.ContainsKey("updatedAt")?Convert.ToString(data["updatedAt"]):"";
                 object live=data.ContainsKey("livePackets")?data["livePackets"]:null;
                 string packets=live!=null && Convert.ToInt64(live)>0 ? Loc.S(" · PktMon 已记录 ")+String.Format("{0:N0}",Convert.ToInt64(live))+Loc.S(" 个数据包") : "";
@@ -890,6 +1047,7 @@ namespace OverFieldLocal
         }
         async Task<bool> SaveCaptureZip(string zip)
         {
+            if (lastCaptureIncomplete) Append(Loc.S("检测到抓包缺口或未解析的流尾部，备份可能不完整；仍可保存已解码账号 ZIP。"));
             string destination;
             using(var dialog = new SaveFileDialog { Title=Loc.S("保存采集账号 ZIP（交付文件）"), Filter=Loc.S("账号备份 ZIP|*.zip"), DefaultExt="zip", AddExtension=true, OverwritePrompt=true, CheckPathExists=true, RestoreDirectory=true, FileName=Path.GetFileName(zip), InitialDirectory=Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory) })
             {
@@ -902,17 +1060,19 @@ namespace OverFieldLocal
             }
             var result=await Task.Run(() => backend.Official("export-zip", " --file " + Backend.Quote(zip) + " --destination " + Backend.Quote(destination)));
             string saved=Convert.ToString(result["path"]);
+            if(String.IsNullOrWhiteSpace(saved) || !File.Exists(saved)) throw new InvalidOperationException(Loc.S("账号 ZIP 导出结果无效，请重试。"));
             Append(Loc.S("账号 ZIP 已交付：")+saved);
-            captureHint.Text=Loc.S("账号 ZIP 已保存：")+saved+Loc.S("。可私下交给可信服主，入库为可选操作。");
+            captureHint.Text=Loc.S("账号 ZIP 已保存：")+saved+Loc.S("。可私下交给可信服主，入库为可选操作。")
+                +(lastCaptureIncomplete?Loc.S("检测到抓包缺口或未解析的流尾部，备份可能不完整；仍可保存已解码账号 ZIP。"):"");
             try {
                 string explorer=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),"explorer.exe");
                 Process.Start(new ProcessStartInfo(explorer,"/select,"+Backend.Quote(saved)){UseShellExecute=true});
             } catch(Exception error) { if(!closing) Append(Loc.S("文件已保存，但无法打开所在位置：")+Friendly.Describe(error,"打开所在位置")); }
             return true;
         }
-        async Task<bool> ChooseOfficialLauncher()
+        async Task<bool> ChooseOfficialLauncher(bool alreadyBusy = false)
         {
-            if(busy || captureRunning || closing) return false;
+            if((!alreadyBusy && busy) || captureRunning || closing) return false;
             string selected;
             using(var dialog = new OpenFileDialog { Title=Loc.S("选择公服启动器、原版客户端，或 Steam 游戏快捷方式"), Filter=Loc.S("公服启动器 / Steam 快捷方式|*.exe;*.url|可执行文件|*.exe|Steam 快捷方式|*.url"), CheckFileExists=true, Multiselect=false, FileName=backend.OfficialLauncherPath })
             { if(dialog.ShowDialog(this)!=DialogResult.OK) return false; selected=dialog.FileName; }
@@ -935,21 +1095,31 @@ namespace OverFieldLocal
         }
         async Task RefreshCaptureState()
         {
-            if(busy || closing) return;
+            if(checkingCaptureState || busy || closing || uiPreview) return;
+            checkingCaptureState=true;
             try
             {
                 var state=await Task.Run(() => backend.Official("status"));
                 if(busy || closing) return;
-                captureRunning=state.ContainsKey("active") && Convert.ToBoolean(state["active"]);
-                string zip=state.ContainsKey("accountZip")?Convert.ToString(state["accountZip"]):"";
-                lastCaptureZip=File.Exists(zip)?zip:"";
-                captureSaveZip.Enabled=!captureRunning && File.Exists(lastCaptureZip);
-                officialBrowse.Enabled=!captureRunning;
-                capturePreflight.Enabled=!captureRunning;
-                captureStart.Enabled=!captureRunning;
-                captureStop.Enabled=captureRunning;
+                ApplyCaptureState(state);
             }
             catch(Exception error) { if(!closing) Append(Loc.S("采集状态检查失败：")+Friendly.Describe(error,"采集状态检查")); }
+            // Must always release the guard: without this the first refresh (or the
+            // first failure) latches the flag and no later state change can refresh.
+            finally { checkingCaptureState=false; }
+        }
+        internal void ApplyCaptureState(Dictionary<string,object> state)
+        {
+            if (state == null || !state.ContainsKey("active")) throw new InvalidOperationException(Loc.S("采集状态结果不完整，请重试。"));
+            captureRunning=Convert.ToBoolean(state["active"]);
+            string zip=state.ContainsKey("accountZip")?Convert.ToString(state["accountZip"]):"";
+            lastCaptureZip=File.Exists(zip)?zip:"";
+            lastCaptureIncomplete=CaptureIncompleteWarning(state).Length>0;
+            captureSaveZip.Enabled=!busy && !captureRunning && File.Exists(lastCaptureZip);
+            officialBrowse.Enabled=!busy && !captureRunning;
+            capturePreflight.Enabled=!busy && !captureRunning;
+            captureStart.Enabled=!busy && !captureRunning;
+            captureStop.Enabled=!busy && captureRunning;
         }
         void ShowCapturePage(bool show)
         {
@@ -987,7 +1157,9 @@ namespace OverFieldLocal
         }
         async Task SwitchMode(string mode)
         {
-            if(busy || closing) return;
+            if(busy || closing || Array.IndexOf(Backend.KnownModes,mode)<0) return;
+            string blocked=PrivateOperationBlockReason();
+            if(blocked.Length>0) { Append(blocked); return; }
             if(backend.Mode==mode) { ShowCapturePage(false); ApplyMode(); return; }
             // Claim busy before any await: rapid clicks otherwise start several switch
             // chains at once, and their Stop/Refresh interleave into a stalled UI.
@@ -995,16 +1167,25 @@ namespace OverFieldLocal
             SetBusy(true, Loc.S("正在切换运行模式"));
             try
             {
-                {int guard=0;while(checking && !closing && guard++<40) await Task.Delay(50);}
+                string previousMode=backend.Mode;
+                var current=await Task.Run(() => backend.Status());
                 if(closing) return;
-                if(lastStatus!=null && lastStatus.ClientRunning) { Append(Loc.S("请先退出游戏，再切换运行模式。")); return; }
-                if(lastStatus!=null && !String.IsNullOrEmpty(lastStatus.RuntimeMode))
+                if(!StatusMatchesMode(previousMode,current)) throw new InvalidOperationException(Loc.S("服务状态与当前模式不一致，已取消切换。"));
+                lastStatus=current;
+                if(current.ClientRunning) { Append(Loc.S("请先退出游戏，再切换运行模式。")); return; }
+                if(!String.IsNullOrEmpty(current.RuntimeMode))
                 {
-                    await Task.Run(() => backend.Run("Stop"));
+                    var stopped=await Task.Run(() => backend.Run("Stop"));
+                    if(closing) return;
+                    // Never change modes after a failed/incomplete stop.
+                    OperationSuccessMessage("Stop",false,stopped,await Task.Run(() => backend.Status()),backend.Uid);
                 }
                 if(closing) return;
-                ShowCapturePage(false);
-                backend.Mode=mode; backend.Save(); ApplyMode();
+                backend.Mode=mode;
+                try { backend.Save(); }
+                catch { backend.Mode=previousMode; throw; }
+                lastStatus=null; lastStatusError=null;
+                ShowCapturePage(false); ApplyMode();
                 Append(mode=="solo" ? Loc.S("已切换到单机，使用本电脑的独立单机存档。")
                      : mode=="steam" ? Loc.S("已切换到国际服（Steam），使用独立的英文存档。")
                      : Loc.S("已切换到局域网服务端，使用独立联机存档。"));
@@ -1020,29 +1201,42 @@ namespace OverFieldLocal
         }
         async Task ImportCapture()
         {
-            if(busy) return;
-            {int guard=0;while(checking && !closing && guard++<40) await Task.Delay(50);}
-            if(closing) return;
-            if(lastStatus!=null && lastStatus.ClientRunning) { Append(Loc.S("请先退出游戏，再导入角色数据。")); return; }
-            string path;
-            using(var dialog=new OpenFileDialog { Title=Loc.S("选择账号备份或解码抓包 ZIP"),Filter=Loc.S("账号备份 / 解码抓包 ZIP|*.zip"),CheckFileExists=true })
-            { if(dialog.ShowDialog(this)!=DialogResult.OK) return; path=dialog.FileName; }
+            if(busy || closing) return;
+            string blocked=PrivateOperationBlockReason();
+            if(blocked.Length>0) { Append(blocked); return; }
+            busy=true; SetBusy(true,Loc.S("正在准备导入"));
             try
             {
+                var current=await Task.Run(() => backend.Status());
+                if(closing) return;
+                if(!StatusMatchesMode(backend.Mode,current)) throw new InvalidOperationException(Loc.S("服务状态与当前模式不一致，已取消导入。"));
+                lastStatus=current;
+                if(current.ClientRunning) { Append(Loc.S("请先退出游戏，再导入角色数据。")); return; }
+                string path;
+                using(var dialog=new OpenFileDialog { Title=Loc.S("选择账号备份或解码抓包 ZIP"),Filter=Loc.S("账号备份 / 解码抓包 ZIP|*.zip"),CheckFileExists=true })
+                { if(dialog.ShowDialog(this)!=DialogResult.OK) return; path=dialog.FileName; }
                 var info=await Task.Run(()=>backend.Capture("inspect",path,0,false)); if(closing) return;
                 uint uid=Convert.ToUInt32(info["uid"]);
                 string message="UID "+uid+" · "+info["name"]+Loc.S("\n等级 ")+info["level"]+" · "+info["characters"]+Loc.S(" 个角色\n\n将导入当前模式的独立数据目录。已有数据会先备份；其他 UID 保留。\n运行中的服务会先停止，并断开在线玩家。\n角色、装备和背包会写入存档，尚未支持的模块会保留原始抓包数据。");
                 if(MessageBox.Show(this,message,Loc.S("确认导入资料"),MessageBoxButtons.OKCancel,MessageBoxIcon.Information)!=DialogResult.OK) return;
-                if(lastStatus!=null && !String.IsNullOrEmpty(lastStatus.RuntimeMode)) await Operate("Stop",false);
-                SetBusy(true,Loc.S("正在导入角色资料")); stop.Enabled=false;
-                await Task.Run(()=> { backend.PrepareProfile(); backend.Capture("import",path,uid,true); }); if(closing) return;
+                if(!String.IsNullOrEmpty(current.RuntimeMode))
+                {
+                    var stopped=await Task.Run(() => backend.Run("Stop"));
+                    OperationSuccessMessage("Stop",false,stopped,await Task.Run(() => backend.Status()),uid);
+                }
+                if(closing) return;
+                SetBusy(true,Loc.S("正在导入角色资料"));
+                var imported=await Task.Run(()=> { backend.PrepareProfile(); return backend.Capture("import",path,uid,true); }); if(closing) return;
+                string database=imported.ContainsKey("database")?Convert.ToString(imported["database"]):"";
+                if(!imported.ContainsKey("uid") || Convert.ToUInt32(imported["uid"])!=uid || !File.Exists(database))
+                    throw new InvalidOperationException(Loc.S("导入结果未确认写入目标存档，请查看导入报告。"));
                 backend.Uid=uid; backend.Save(); uidBox.Value=uid;
                 Append(Loc.S("已导入 UID ")+uid+Loc.S(" 的资料。原数据已有备份，其他 UID 保留。"));
                 Append(Loc.S("导入报告位于数据目录 accounts\\")+uid+"\\import-report.json。");
             }
             catch(Exception e) { Append(Loc.S("导入未完成：")+Friendly.Describe(e,"导入存档")); }
             finally { SetBusy(false,""); }
-            await RefreshStatus();
+            if(!closing) await RefreshStatus();
         }
         void OpenFolder(string path)
         {
@@ -1064,11 +1258,13 @@ namespace OverFieldLocal
             try { Directory.CreateDirectory(Path.Combine(backend.BaseDir, "runtime")); File.AppendAllText(Path.Combine(backend.BaseDir, "runtime", "launcher.log"), line, new UTF8Encoding(false)); }
             catch { }
         }
-        void SetBusy(bool value, string text)
+        void SetBusy(bool value, string text, bool cancellable = false)
         {
             if (closing) return;
-            busy = value; start.Enabled = services.Enabled = !value; stop.Enabled = !value || operationCancellation != null;
+            busy = value; operationCancellable = value && cancellable;
+            start.Enabled = services.Enabled = !value; stop.Enabled = !value || cancellable;
             soloMode.Enabled=steamMode.Enabled=hostMode.Enabled=importData.Enabled=backupData.Enabled=!value;
+            openData.Enabled=!value;
             captureMode.Enabled = !value;
             officialBrowse.Enabled = !value && !captureRunning;
             capturePreflight.Enabled = !value && !captureRunning;
@@ -1076,37 +1272,29 @@ namespace OverFieldLocal
             captureStop.Enabled = !value && captureRunning;
             captureSaveZip.Enabled = !value && !captureRunning && File.Exists(lastCaptureZip);
             uidBox.Enabled=!value && (lastStatus==null || !lastStatus.ClientRunning); hostBox.Enabled=!value && backend.Mode=="host" && (lastStatus==null || String.IsNullOrEmpty(lastStatus.RuntimeMode)); firewall.Enabled=!value && backend.Mode=="host";
-            stop.Text = value ? (operationCancellation != null ? Loc.S("取消操作") : Loc.S("正在处理…")) : Loc.S("停止服务");
+            roomsButton.Enabled=!value && !captureRunning && backend.Mode=="host" && lastStatus!=null && lastStatus.Ready;
+            stop.Text = value ? (cancellable ? Loc.S("取消操作") : Loc.S("正在处理…")) : Loc.S("停止服务");
             browse.Enabled = !value && lastStatus != null && !lastStatus.ServerRunning && !lastStatus.ProxyRunning;
             if (value) { badge.Text = text; badge.ForeColor = Theme.Accent; start.Text = Loc.S("正在处理…"); }
-            else start.Text = backend.Mode=="host" ? Loc.S("发布局域网服务  →") : lastStatus != null && lastStatus.ClientRunning ? Loc.S("返回游戏  →") : Loc.S("启动单机游戏  →");
+            else start.Text = StartButtonText(backend.Mode,lastStatus);
         }
         async Task RefreshStatus()
         {
             if (busy || checking || closing) return; checking = true;
+            string requestedMode=backend.Mode;
             try
             {
-                var status = await Task.Run(() => backend.Status()); if (closing) return;
-                lastStatus = status; lastStatusError = null;
-                server.UpdateState(status.ServerRunning && status.HttpListening, status.ServerRunning && status.HttpListening ? Loc.S("运行中 · 本地服务正常") : Loc.S("未启动"));
-                gateway.UpdateState(status.GatewayListening && status.ServerRunning, status.GatewayListening && status.ServerRunning ? Loc.S("已就绪 · 等待游戏连接") : Loc.S("等待服务启动"));
-                proxy.UpdateState(status.ProxyRunning && status.ProxyListening && status.ProxyEnabled, status.ProxyRunning && status.ProxyListening && status.ProxyEnabled ? Loc.S("已连接 · 本地游戏线路") : status.ProxyRunning && status.ProxyListening ? Loc.S("代理设置未接入") : Loc.S("等待连接"));
-                badge.Text = status.Ready ? (backend.Mode=="host" ? Loc.S("●  局域网已发布") : status.ClientRunning ? Loc.S("●  游戏已运行") : Loc.S("●  可以开始游戏")) : Loc.S("○  等待启动");
-                badge.ForeColor = status.Ready ? Theme.Accent : Theme.Muted;
-                start.Text = backend.Mode=="host" ? Loc.S("发布局域网服务  →") : status.ClientRunning ? Loc.S("返回游戏  →") : Loc.S("启动单机游戏  →");
-                browse.Enabled = !status.ServerRunning && !status.ProxyRunning;
-                uidBox.Enabled=!status.ClientRunning;
-                hostBox.Enabled=backend.Mode=="host" && String.IsNullOrEmpty(status.RuntimeMode);
-                profileLabel.Text=Loc.S("独立数据目录  ·  ")+backend.ProfilePath;
-                proxy.Caption=Loc.S("UID 与房间网关");
-                proxy.UpdateState(status.ProxyRunning && status.ProxyEnabled,status.ProxyRunning && status.ProxyEnabled ? Loc.S("已就绪 · 独立账号与房间管理") : Loc.S("等待网关启动"));
-                roomsButton.Enabled=backend.Mode=="host" && status.Ready;
-                if(backend.Mode=="host") gateway.UpdateState(status.GatewayListening,status.GatewayListening ? Loc.S("局域网地址 · ")+status.Target : Loc.S("等待发布局域网服务"));
-                firewall.Text=backend.Mode=="host" && status.FirewallConfigured ? Loc.S("权限已配置") : Loc.S("局域网权限");
+                var status = await Task.Run(() => backend.Status());
+                if (closing || busy) return;
+                // A slow response from the previous mode must not repaint the new
+                // mode's controls or make its services look ready.
+                if(!TryApplyStatus(requestedMode,status)) return;
+                lastStatusError = null;
             }
             catch (Exception e)
             {
                 if (closing) return;
+                lastStatus=null;
                 server.UpdateState(false, Loc.S("无法检查，请查看运行记录")); gateway.UpdateState(false, Loc.S("等待检查")); proxy.UpdateState(false, Loc.S("等待检查"));
                 badge.Text = Loc.S("需要检查配置"); badge.ForeColor = Color.FromArgb(244, 181, 125); browse.Enabled = true;
                 string friendly=Friendly.Describe(e,"检查服务状态");
@@ -1114,28 +1302,55 @@ namespace OverFieldLocal
             }
             finally { checking = false; }
         }
+        internal bool TryApplyStatus(string requestedMode, ServiceStatus status)
+        {
+            if(!StatusMatchesMode(requestedMode,status) || !StatusMatchesMode(backend.Mode,status)) return false;
+            lastStatus=status; ApplyStatus(status); return true;
+        }
+        internal void ApplyStatus(ServiceStatus status)
+        {
+            if(status==null) throw new InvalidOperationException(Loc.S("无法读取服务状态。"));
+            server.UpdateState(status.ServerRunning && status.HttpListening, status.ServerRunning && status.HttpListening ? Loc.S("运行中 · 本地服务正常") : Loc.S("未启动"));
+            gateway.UpdateState(status.GatewayListening && status.ServerRunning, status.GatewayListening && status.ServerRunning ? Loc.S("已就绪 · 等待游戏连接") : Loc.S("等待服务启动"));
+            proxy.UpdateState(status.ProxyRunning && status.ProxyListening && status.ProxyEnabled, status.ProxyRunning && status.ProxyListening && status.ProxyEnabled ? Loc.S("已连接 · 本地游戏线路") : status.ProxyRunning && status.ProxyListening ? Loc.S("代理设置未接入") : Loc.S("等待连接"));
+            badge.Text = status.Ready ? (backend.Mode=="host" ? Loc.S("●  局域网已发布") : status.ClientRunning ? Loc.S("●  游戏已运行") : Loc.S("●  可以开始游戏")) : Loc.S("○  等待启动");
+            badge.ForeColor = status.Ready ? Theme.Accent : Theme.Muted;
+            start.Text = StartButtonText(backend.Mode,status);
+            browse.Enabled = !captureRunning && !status.ServerRunning && !status.ProxyRunning;
+            uidBox.Enabled=!captureRunning && !status.ClientRunning;
+            hostBox.Enabled=!captureRunning && backend.Mode=="host" && String.IsNullOrEmpty(status.RuntimeMode);
+            profileLabel.Text=Loc.S("独立数据目录  ·  ")+backend.ProfilePath;
+            proxy.Caption=Loc.S("UID 与房间网关");
+            proxy.UpdateState(status.ProxyRunning && status.ProxyEnabled,status.ProxyRunning && status.ProxyEnabled ? Loc.S("已就绪 · 独立账号与房间管理") : Loc.S("等待网关启动"));
+            roomsButton.Enabled=!captureRunning && backend.Mode=="host" && status.Ready;
+            if(backend.Mode=="host") gateway.UpdateState(status.GatewayListening,status.GatewayListening ? Loc.S("局域网地址 · ")+status.Target : Loc.S("等待发布局域网服务"));
+            firewall.Text=backend.Mode=="host" && status.FirewallConfigured ? Loc.S("权限已配置") : Loc.S("局域网权限");
+            firewall.Enabled=!captureRunning && backend.Mode=="host";
+        }
         async Task Operate(string action, bool launch)
         {
-            if (busy) return;
-            while (checking && !closing) await Task.Delay(50);
             if (busy || closing) return;
+            string blocked=PrivateOperationBlockReason();
+            if(blocked.Length>0) { Append(blocked); return; }
             operationCancellation = new CancellationTokenSource();
-            SetBusy(true, action == "Stop" ? Loc.S("正在停止服务") : Loc.S("正在准备游戏"));
-            Append(action == "Stop" ? Loc.S("正在停止当前模式的服务并恢复原网络路线。") : action=="Backup" ? Loc.S("正在备份独立存档…") : launch ? Loc.S("正在准备 UID ")+backend.Uid+Loc.S(" 的本地游戏，请稍候…") : Loc.S("正在启动 ")+(backend.Mode=="solo" ? Loc.S("单机") : Loc.S("局域网"))+Loc.S(" 服务，请稍候…"));
+            SetBusy(true, action == "Stop" ? Loc.S("正在停止服务") : Loc.S("正在准备游戏"), true);
+            Append(action == "Stop" ? Loc.S("正在停止当前模式的服务并恢复原网络路线。") : action=="Backup" ? Loc.S("正在备份独立存档…") : launch ? Loc.S("正在准备 UID ")+backend.Uid+Loc.S(" 的本地游戏，请稍候…") : Loc.S("正在启动 ")+(backend.Mode=="solo" ? Loc.S("单机") : backend.Mode=="steam" ? Loc.S("国际服") : Loc.S("局域网"))+Loc.S(" 服务，请稍候…"));
             try
             {
-                if (action == "Start") { backend.ValidateRoot(backend.Root); if (!File.Exists(backend.Python)) throw new InvalidOperationException(Loc.S("未找到 Python，请在 launcher.settings.json 中设置 pythonExe。")); }
                 var token = operationCancellation.Token;
-                var result = await Task.Run(() => backend.Run(action, launch, token));
+                string mode=backend.Mode; uint uid=backend.Uid;
+                var result = await Task.Run(() => {
+                    if (action == "Start") { backend.ValidateRoot(backend.Root); if (!File.Exists(backend.Python)) throw new InvalidOperationException(Loc.S("未找到 Python，请在 launcher.settings.json 中设置 pythonExe。")); }
+                    return backend.Run(action, launch, token);
+                });
                 if (closing) return;
-                if (result.Code != 0) throw new InvalidOperationException(result.Error.Length > 0 ? result.Error : result.Output);
-                if (action == "Stop") Append(Loc.S("当前模式的服务已停止，原网络路线已恢复。"));
-                else if(action=="Backup") Append(Loc.S("备份已保存：")+result.Output);
-                else
-                {
-                    Append(Loc.S("本地服务与游戏线路已就绪。"));
-                    if (launch) { Append(result.Output.Contains("Client already running") ? Loc.S("游戏已经运行，已保留当前进度。") : Loc.S("游戏已打开，使用本地 UID ")+backend.Uid+Loc.S(" 登录。") ); backend.FocusClient(); }
-                }
+                var status=await Task.Run(() => backend.Status());
+                if(closing)return;
+                if(!StatusMatchesMode(mode,status) || !StatusMatchesMode(backend.Mode,status)) throw new InvalidOperationException(Loc.S("操作结果与当前模式不一致，请重新检查状态。"));
+                lastStatus=status; lastStatusError=null; ApplyStatus(status);
+                string message=OperationSuccessMessage(action,launch,result,status,uid);
+                Append(message);
+                if(action=="Start" && launch && status.ClientRunning) await Task.Run(() => backend.FocusClient());
             }
             catch (OperationCanceledException) { Append(Loc.S("操作已取消。已启动的服务会保留，请查看状态后重试。")); }
             catch (Exception e) { Append(Loc.S("操作失败：") + Friendly.Describe(e, action == "Stop" ? "停止服务" : "启动服务")); }
@@ -1176,7 +1391,7 @@ namespace OverFieldLocal
         void SaveSmoke()
         {
             try { using (var bitmap = new Bitmap(Width, Height)) { DrawToBitmap(bitmap, new Rectangle(0, 0, Width, Height)); bitmap.Save(smokePath, System.Drawing.Imaging.ImageFormat.Png); } }
-            finally { Close(); }
+            finally { Environment.Exit(0); }
         }
     }
 }

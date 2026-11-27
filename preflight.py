@@ -2,18 +2,22 @@
 from pathlib import Path
 from contextlib import closing
 import argparse
+import importlib.util
 import json
+import platform
 import sqlite3
 import sys
 
 BASE = Path(__file__).resolve().parent
-FILES = ['OverFieldLauncher.exe','LocalUidSDK.dll','launcher.ico','World-Control.ps1','Lan-Firewall.ps1','profile_manager.py','capture_import.py','room_gateway.py','model_schema.json','proto_fields.json','service_runner.py','make_junction.ps1','repair_version.py']
+FILES = ['OverFieldLauncher.exe','LocalUidSDK.dll','launcher.ico','World-Control.ps1','Lan-Firewall.ps1','profile_manager.py','capture_import.py','room_gateway.py','model_schema.json','proto_fields.json','service_runner.py','make_junction.ps1','repair_version.py','client_identity.py','taptap_private_runner.py','taptap_private_agent.js']
 
 def check(root=None, mode='host'):
     failures=[]
     warnings=[]
     if sys.version_info < (3,12):
         failures.append('Use Python 3.12 or later; supported launcher environment is Python 3.12 x64.')
+    if sys.maxsize <= 2**32 or platform.machine().lower() not in ('amd64', 'x86_64'):
+        failures.append('The launcher requires 64-bit Python on Windows x64.')
     for name in FILES:
         if not (BASE/name).is_file(): failures.append('Missing launcher file: '+name)
     server=root/'LoloServer' if root and (root/'LoloServer/Lolo.exe').is_file() else BASE/'server-kit'
@@ -44,6 +48,39 @@ def check(root=None, mode='host'):
         client=root/'OverField Game' if root and (root/'OverField Game/launcher.exe').is_file() else root
         if not client or not (client/'launcher.exe').is_file() or not (client/'launcher_Data').is_dir():
             failures.append('Solo mode requires a compatible local PC game client selected with --game-root.')
+        else:
+            from client_identity import classify, fingerprint, is_reparse_point
+            identity = None
+            try:
+                if is_reparse_point(client):
+                    failures.append('Game client root must not be a symlink or Junction.')
+                else:
+                    identity = fingerprint(client)
+                channel = classify(client)
+            except (ValueError, OSError) as error:
+                failures.append('Cannot verify game client files: ' + str(error))
+                channel = 'unknown'
+            if channel not in ('pcgamesdk', 'quicksdk-pc'):
+                failures.append('Unsupported or unverified game channel.')
+            for relative in ('launcher.exe', 'GameAssembly.dll', 'launcher_Data/app.info'):
+                if is_reparse_point(client / relative) or not (client / relative).is_file():
+                    failures.append('Missing or linked game file: ' + relative)
+            program_manifest = client / 'launcher_Data/StreamingAssets/yoo/DefaultPackage/PackageManifest_DefaultPackage.version'
+            resource_manifest = client / 'launcher_Data/yoo/DefaultPackage/ManifestFiles/PackageManifest_DefaultPackage.version'
+            if program_manifest.exists() or is_reparse_point(program_manifest):
+                try:
+                    import repair_version
+                    repair_version.read_version(program_manifest)
+                    repair_version.read_version(resource_manifest)
+                except (ValueError, OSError) as error:
+                    failures.append('Invalid game version manifest: ' + str(error))
+            if channel == 'quicksdk-pc' and identity is not None:
+                from taptap_private_runner import SUPPORTED_BUILDS
+                digest = identity['files'].get('GameAssembly.dll')
+                if digest not in SUPPORTED_BUILDS:
+                    failures.append('Unverified GameAssembly version for the QuickSDK adapter.')
+                if importlib.util.find_spec('frida') is None:
+                    failures.append('Missing Frida 17.24.3 for the QuickSDK adapter.')
     warnings.append('Local UID login is not ownership authentication. Do not expose a personal-save host to untrusted players.')
     return {'ready':not failures,'missing':failures,'warnings':list(dict.fromkeys(warnings)),'scope':'Files/schema only; no game startup, networking, authentication or protocol compatibility test.'}
 

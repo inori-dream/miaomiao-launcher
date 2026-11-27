@@ -4,6 +4,7 @@ import argparse
 import asyncio
 from contextlib import closing
 import json
+import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import secrets
@@ -11,6 +12,7 @@ import sqlite3
 import struct
 import threading
 import time
+import uuid
 
 
 def varint(value):
@@ -193,11 +195,31 @@ class Manager:
         default_id=int(constants.get('DefaultChannelId',constants.get('defaultChannelId',1314)))
         self.rooms=json.loads(self.config_file.read_text(encoding='utf-8')) if self.config_file.exists() else [{'id':default_id,'scene':0,'name':'默认房间','capacity':20,'closed':False}]
         self.key_file=profile/'admin-key.txt'
-        if not self.key_file.exists():self.key_file.write_text(secrets.token_hex(32),encoding='ascii')
-        self.key=self.key_file.read_text(encoding='ascii').strip();self.save()
+        self.key=self._admin_key()
+        self.save()
+
+    def _admin_key(self):
+        if self.key_file.exists():
+            try:
+                value=self.key_file.read_text(encoding='ascii').strip()
+                if re.fullmatch(r'[0-9a-f]{64}',value):return value
+            except (OSError,UnicodeError):pass
+            evidence=self.key_file.with_name(f'admin-key.corrupt-{uuid.uuid4().hex}.txt')
+            self.key_file.replace(evidence)
+        value=secrets.token_hex(32)
+        temporary=self.key_file.with_name(f'.admin-key-{uuid.uuid4().hex}.tmp')
+        try:
+            temporary.write_text(value,encoding='ascii')
+            temporary.replace(self.key_file)
+        finally:temporary.unlink(missing_ok=True)
+        return value
 
     def save(self):
-        temporary=self.config_file.with_suffix('.json.tmp');temporary.write_text(json.dumps(self.rooms,ensure_ascii=False,indent=2),encoding='utf-8');temporary.replace(self.config_file)
+        temporary=self.config_file.with_name(f'.rooms-{uuid.uuid4().hex}.tmp')
+        try:
+            temporary.write_text(json.dumps(self.rooms,ensure_ascii=False,indent=2),encoding='utf-8')
+            temporary.replace(self.config_file)
+        finally:temporary.unlink(missing_ok=True)
 
     def snapshot(self):
         online=[{'uid':s['uid'],'name':s.get('name',''),'ip':s['ip'],'room':s.get('room',0),'scene':s.get('scene',0),'ready':s.get('ready',False)} for s in self.sessions.values() if s.get('uid')]
@@ -409,10 +431,22 @@ class Admin(BaseHTTPRequestHandler):
 
 async def main(args):
     manager=Manager(args.profile,asyncio.get_running_loop());Admin.manager=manager
-    http=ThreadingHTTPServer(('127.0.0.1',args.admin_port),Admin);thread=threading.Thread(target=http.serve_forever,daemon=True);thread.start()
-    server=await asyncio.start_server(lambda r,w:manager.connect(r,w,args.backend_port),args.host,args.port)
-    print(json.dumps({'event':'gateway-ready','port':args.port,'adminPort':args.admin_port}),flush=True)
-    async with server:await server.serve_forever()
+    http=None;server=None;thread=None;thread_started=False
+    try:
+        http=ThreadingHTTPServer(('127.0.0.1',args.admin_port),Admin)
+        thread=threading.Thread(target=http.serve_forever,daemon=True);thread.start();thread_started=True
+        server=await asyncio.start_server(lambda r,w:manager.connect(r,w,args.backend_port),args.host,args.port)
+        print(json.dumps({'event':'gateway-ready','port':args.port,'adminPort':args.admin_port}),flush=True)
+        async with server:await server.serve_forever()
+    finally:
+        # A gateway bind failure must not leave the admin listener alive in an
+        # embedded/test process or when asyncio propagates the failure.
+        if server is not None:
+            server.close();await server.wait_closed()
+        if http is not None:
+            if thread_started:http.shutdown()
+            http.server_close()
+        if thread_started:thread.join(timeout=5)
 
 
 PROTO=json.loads(Path(__file__).with_name('proto_fields.json').read_text(encoding='utf-8'))

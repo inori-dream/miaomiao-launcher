@@ -109,7 +109,10 @@ class GapDetectionTests(unittest.TestCase):
             parser.analyze_pcap(path,out)
         summary=json.loads((out/'summary.json').read_text(encoding='utf-8'))
         self.assertGreaterEqual(summary['tcp_gap_count'],1)
-        self.assertTrue(any(row.get('tcp_gap') for row in summary['trailing_streams']))
+        # A gap with no surviving tail is reported in the gap list; trailing_streams
+        # only carries directions that also have undecoded bytes left over.
+        self.assertTrue(any(row.get('tcp_gap') for row in summary['incomplete_streams']))
+        self.assertTrue(any(row.get('tcp_gap') for row in summary['tcp_gap_streams']))
         self.assertTrue((out/summary['account_zip']).is_file())
 
 

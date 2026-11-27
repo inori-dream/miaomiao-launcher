@@ -59,14 +59,32 @@ class CaptureCompletionTests(unittest.TestCase):
             result=capture.stop()
         self.assertNotEqual(used[0],old);self.assertEqual(marker.read_text(),'keep')
         self.assertTrue(Path(result['accountZip']).is_file())
+    def test_capture_gap_is_reported_without_blocking_zip_delivery(self):
+        source=self.output()
+        summary=source.with_name('summary.json')
+        metadata=json.loads(summary.read_text(encoding='utf-8'))
+        metadata['incomplete_streams']=[{'stream_id':0,'direction':'s2c','tcp_gap':True,'trailing_bytes':0}]
+        summary.write_text(json.dumps(metadata,ensure_ascii=False),encoding='utf-8')
+        (summary.parent/'json').mkdir()
+        self.state(False)
+        result=capture.stop()
+        self.assertEqual(result['accountZip'],str(source));self.assertEqual(result['incompleteStreams'],1)
+        report=json.loads(summary.with_name('capture-checklist.json').read_text(encoding='utf-8'))
+        self.assertIn('备份可能不完整',report['warning']);self.assertIn('仍可保存',report['warning'])
+        self.assertEqual(capture.status()['incompleteStreams'],1)
+    def test_missing_incomplete_stream_field_is_zero(self):
+        self.output();self.state(False)
+        result=capture.stop()
+        self.assertEqual(result['incompleteStreams'],0)
+        self.assertNotIn('备份可能不完整',capture.read_state().get('error',''))
     def test_unsafe_account_zip_path_is_rejected(self):
         export=self.account/'export';export.mkdir()
-        (export/'summary.json').write_text(json.dumps({'total_packets':1,'player_uids':[777],'account_zip':'../outside.zip'}))
+        (export/'summary.json').write_text(json.dumps({'total_packets':1,'player_uids':[777],'account_zip':'../outside.zip'}),encoding='utf-8')
         self.state(False)
         with self.assertRaises(ValueError):capture.stop()
     def test_no_account_summary_does_not_make_fake_zip(self):
         export=self.account/'export';export.mkdir()
-        (export/'summary.json').write_text(json.dumps({'total_packets':0,'player_uids':[]}))
+        (export/'summary.json').write_text(json.dumps({'total_packets':0,'player_uids':[]}),encoding='utf-8')
         self.state(False);result=capture.stop()
         self.assertEqual(result['accountZip'],'');self.assertEqual(list(export.glob('*.zip')),[])
 

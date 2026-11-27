@@ -28,32 +28,22 @@ class ChecklistTests(unittest.TestCase):
         self.assertEqual(self.items(phase='complete',readable=True)['main']['state'],'missing')
     def test_inventory_equipment_requires_decoded_instance(self):
         self.event('PackNotice',{'items':[{'main_item':{'weapon':{'instance_id':42,'weapon_id':1},'armor':{'field_2':43}}}]})
-        data=self.items(readable=True);self.assertEqual(data['weapon']['state'],'collected')
+        data=self.items(readable=True);self.assertEqual(data['weapon']['state'],'partial')
+        self.assertEqual(data['weapon']['status'],'未见装备列表')
         self.assertEqual(data['armor']['state'],'waiting')
-    def test_bag_only_gear_warns_that_equipment_is_incomplete(self):
-        """PackNotice gear marks the group collected but is not the equipment list."""
-        self.event('PackNotice',{'items':[{'main_item':{
-            'weapon':{'instance_id':42,'weapon_id':1},
-            'armor':{'instance_id':43,'armor_id':2},
-            'poster':{'instance_id':44,'poster_id':3}}}]})
-        data=self.items(readable=True)
-        for group in ('weapon','armor','poster'):
-            self.assertEqual(data[group]['state'],'collected')
-        report=checklist.report(self.counts,self.empty,phase='complete',readable=True)
-        for name in ('GetWeaponRsp','GetArmorRsp','GetPosterRsp'):
-            self.assertIn(name,report['warning'])
-        self.assertIn('装备',report['warning'])
-    def test_authoritative_equipment_list_suppresses_the_warning(self):
-        self.event('PackNotice',{'items':[{'main_item':{'weapon':{'instance_id':42,'weapon_id':1}}}]})
-        self.event('GetWeaponRsp',{'weapons':[{'instance_id':42,'weapon_id':1}]})
-        self.event('GetArmorRsp',{'armors':[]})
-        self.event('GetPosterRsp',{'posters':[]})
-        report=checklist.report(self.counts,self.empty,phase='complete',readable=True)
-        self.assertEqual(report['warning'],'')
-    def test_no_gear_at_all_does_not_warn(self):
-        self.event('PlayerMainDataRsp',{'status':1,'player_id':7,'characters':[]})
-        report=checklist.report(self.counts,self.empty,phase='complete',readable=True)
-        self.assertEqual(report['warning'],'')
+    def test_equipped_item_instance_is_partial_until_dedicated_list_arrives(self):
+        self.event('GetAllCharacterEquipRsp',{'status':1,'items':[{'main_item':{
+            'armor':{'instance_id':43,'wearer_id':7},'poster':{'instance_id':44,'wearer_id':7}}}]})
+        data=self.items(phase='complete',readable=True)
+        self.assertEqual(data['armor']['state'],'partial');self.assertEqual(data['poster']['state'],'partial')
+        self.event('GetArmorRsp',{'status':1,'armors':[]})
+        self.event('GetPosterRsp',{'status':'StatusCode_OK','posters':[{'instance_id':44}]})
+        data=self.items(phase='complete',readable=True)
+        self.assertEqual(data['armor']['state'],'collected');self.assertEqual(data['poster']['state'],'collected')
+    def test_failed_dedicated_list_does_not_upgrade_partial(self):
+        self.event('PackNotice',{'items':[{'main_item':{'weapon':{'instance_id':42}}}]})
+        self.event('GetWeaponRsp',{'status':2,'weapons':[{'instance_id':42}]})
+        self.assertEqual(self.items(phase='complete',readable=True)['weapon']['state'],'partial')
     def test_city_scene_does_not_count_as_home(self):
         self.event('SceneDataNotice',{'data':{'scene_id':1001}})
         self.assertEqual(self.items(readable=True)['garden']['state'],'waiting')
@@ -62,12 +52,35 @@ class ChecklistTests(unittest.TestCase):
     def test_final_report_ignores_request_counts_and_failed_json(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);(root/'json').mkdir()
-            (root/'summary.json').write_text(json.dumps({'message_counts':{'GetWeaponRsp':99}}))
-            (root/'json/1_s0_s2c_1_GetPetRsp.json').write_text(json.dumps({'status':1,'pets':[]}))
-            (root/'json/2_s0_s2c_2_GetMailsRsp.json').write_text(json.dumps({'status':2}))
+            (root/'summary.json').write_text(json.dumps({'message_counts':{'GetWeaponRsp':99}}),encoding='utf-8')
+            (root/'json/1_s0_s2c_1_GetPetRsp.json').write_text(json.dumps({'status':1,'pets':[]}),encoding='utf-8')
+            (root/'json/2_s0_s2c_2_GetMailsRsp.json').write_text(json.dumps({'status':2}),encoding='utf-8')
             result={i['id']:i for i in checklist.final_report(root)['items']}
             self.assertEqual(result['pet']['state'],'empty')
             self.assertEqual(result['weapon']['state'],'missing');self.assertEqual(result['mail']['state'],'missing')
+    def test_final_report_warns_about_gap_without_blocking_decoded_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);(root/'json').mkdir()
+            (root/'summary.json').write_text(json.dumps({
+                'player_uids':[7,8],
+                'incomplete_streams':[{'stream_id':0,'direction':'s2c','tcp_gap':True,'trailing_bytes':0}],
+            },ensure_ascii=False),encoding='utf-8')
+            (root/'json/1_s0_s2c_1_GetWeaponRsp.json').write_text(
+                json.dumps({'status':1,'weapons':[{'instance_id':42}]},ensure_ascii=False),encoding='utf-8')
+            data=checklist.final_report(root)
+            self.assertIn('备份可能不完整',data['warning']);self.assertIn('仍可保存',data['warning'])
+            self.assertIn('多个账号',data['warning'])
+            self.assertIn('may be incomplete',data['warningEn']);self.assertIn('can still be saved',data['warningEn'])
+            weapon=next(item for item in data['items'] if item['id']=='weapon')
+            self.assertEqual(weapon['state'],'collected')
+    def test_missing_json_folder_keeps_unknown_states_and_gap_warning(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            (root/'summary.json').write_text(json.dumps({'incomplete_streams':[
+                {'stream_id':0,'direction':'s2c','tcp_gap':True,'trailing_bytes':0}]}),encoding='utf-8')
+            result=checklist.final_report(root)
+            self.assertTrue(all(item['state']=='unknown' for item in result['items']))
+            self.assertIn('备份可能不完整',result['warning'])
     def test_missing_json_folder_is_unknown(self):
         with tempfile.TemporaryDirectory() as d:
             result=checklist.final_report(d)

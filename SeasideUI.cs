@@ -53,7 +53,7 @@ namespace OverFieldLocal
             logs.Text=Loc.S("欢迎回到开放空间。\n选择运行模式，设置自己的 UID，然后开始你的世界。\n此预览未连接官服、未启动游戏或服务。");
             PerformLayout();var errors=new List<string>();AuditUI(this,errors);
             string stem=backend.Mode+"-"+ClientSize.Width+"x"+ClientSize.Height;
-            using(var bitmap=new Bitmap(Width,Height)){DrawToBitmap(bitmap,new Rectangle(0,0,Width,Height));bitmap.Save(Path.Combine(directory,stem+".png"));}
+            using(var bitmap=new Bitmap(ClientSize.Width,ClientSize.Height)){DrawToBitmap(bitmap,new Rectangle(0,0,ClientSize.Width,ClientSize.Height));bitmap.Save(Path.Combine(directory,stem+".png"));}
             File.WriteAllText(Path.Combine(directory,stem+".json"),new JavaScriptSerializer().Serialize(new Dictionary<string,object>{{"mode",backend.Mode},{"page",capturePage != null && capturePage.Visible ? "capture" : "world"},{"size",ClientSize.ToString()},{"layoutErrors",errors},{"checked","Button text fit, interactive sibling overlap, child bounds; no game/service operations"}}));
         }
         void AuditUI(Control parent,List<string> errors)

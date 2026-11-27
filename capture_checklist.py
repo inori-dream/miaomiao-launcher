@@ -38,7 +38,11 @@ GROUPS = [
     ('archive','档案与生活技能',['GetArchiveInfoRsp','GetLifeInfoRsp'],'打开档案、生活技能界面'),
 ]
 RELEVANT = {n for _,_,targets,_ in GROUPS for n in targets if not n.startswith('@')} | {'PackNotice','GetAllCharacterEquipRsp','SceneDataNotice'}
-STATES = {'collected':'已采集','empty':'已收到（列表为空）','waiting':'尚未采集','missing':'未采集到','unknown':'暂时无法判断'}
+STATES = {'collected':'已采集','partial':'未见装备列表','empty':'已收到（列表为空）','waiting':'尚未采集','missing':'未采集到','unknown':'暂时无法判断'}
+CAPTURE_INCOMPLETE_WARNING = '检测到抓包缺口或未解析的流尾部，备份可能不完整；仍可保存已解码账号 ZIP。'
+CAPTURE_INCOMPLETE_WARNING_EN = 'A TCP capture gap or undecoded stream tail was found. The backup may be incomplete; the decoded account ZIP can still be saved.'
+MULTI_ACCOUNT_WARNING = '本次流量包含多个账号，清单仅表示本次见过这些响应；不能作为单账号完整备份，请按账号分别采集。'
+MULTI_ACCOUNT_WARNING_EN = 'This traffic contains multiple accounts. The checklist shows only responses seen in this capture and is not a complete single-account backup; capture each account separately.'
 
 
 def atomic_json(path, data):
@@ -46,6 +50,24 @@ def atomic_json(path, data):
     temporary=path.with_name(path.name+'.tmp')
     temporary.write_text(json.dumps(data,ensure_ascii=False),encoding='utf-8')
     temporary.replace(path)
+
+
+def equipment_instances(item):
+    """Yield valid weapon/armor/poster instances from a bag or equipped item."""
+    if not isinstance(item,dict):return
+    containers=[item]
+    for key in ('main_item','transformed_item'):
+        value=item.get(key)
+        if isinstance(value,dict):containers.append(value)
+    extras=item.get('extras',[]) or []
+    if isinstance(extras,list):containers.extend(value for value in extras if isinstance(value,dict))
+    for container in containers:
+        for kind in ('weapon','armor','poster'):
+            value=container.get(kind)
+            if not isinstance(value,dict):continue
+            try:instance_id=int(value.get('instance_id') or 0)
+            except (TypeError,ValueError):continue
+            if instance_id>0:yield kind
 
 
 def observe(name, body, counts, empty):
@@ -65,10 +87,7 @@ def observe(name, body, counts, empty):
         counts['@bag']+=1
         if not body.get('items') and not body.get('characters'):empty['@bag']+=1
         for detail in body.get('items',[]) or []:
-            item=detail.get('main_item',{}) if isinstance(detail,dict) else {}
-            for kind in ('weapon','armor','poster'):
-                value=item.get(kind)
-                if isinstance(value,dict) and int(value.get('instance_id') or 0)>0:counts['@'+kind]+=1
+            for kind in equipment_instances(detail):counts['@'+kind]+=1
     if name=='SceneDataNotice':
         data=body.get('data',{})
         if isinstance(data,dict) and int(data.get('scene_id') or 0)==9999:counts['@garden']+=1
@@ -77,7 +96,7 @@ def observe(name, body, counts, empty):
     if key and not body.get(key):empty[name]+=1
 
 
-def report(counts=None, empty=None, *, phase='idle', readable=False, warning='', updated=None, live_packets=None):
+def report(counts=None, empty=None, *, phase='idle', readable=False, warning='', warning_en='', updated=None, live_packets=None):
     counts=counts or {};empty=empty or {}
     final=phase=='complete'
     items=[]
@@ -85,14 +104,19 @@ def report(counts=None, empty=None, *, phase='idle', readable=False, warning='',
         evidence={n:int(counts.get(n,0)) for n in targets if counts.get(n,0)>0}
         count=sum(evidence.values())
         if count:
-            state='empty' if all(empty.get(n,0)>=v for n,v in evidence.items()) else 'collected'
+            if key in ('weapon','armor','poster') and set(evidence)=={'@'+key}:
+                # An item instance proves the player owns/wears this equipment,
+                # but it is not the dedicated list needed for a complete import.
+                state='partial'
+            else:
+                state='empty' if all(empty.get(n,0)>=v for n,v in evidence.items()) else 'collected'
         else:state='missing' if final and readable else 'waiting' if readable else 'unknown'
         items.append({'id':key,'label':label,'state':state,'status':STATES[state],
                       'count':count,'evidence':evidence,'hint':hint})
     if not warning:
         warning=equipment_warning(counts)
     return {'phase':phase,'readable':readable,'updatedAt':updated or dt.datetime.now().isoformat(timespec='seconds'),
-            'warning':warning,'items':items,'counts':dict(counts),'emptyCounts':dict(empty),
+            'warning':warning,'warningEn':warning_en,'items':items,'counts':dict(counts),'emptyCounts':dict(empty),
             'livePackets':live_packets}
 
 
@@ -116,28 +140,31 @@ def equipment_warning(counts):
 
 def final_report(export):
     counts=Counter();empty=Counter();export=Path(export)
+    warnings=[];warnings_en=[]
+    summary=export/'summary.json'
+    if summary.is_file():
+        try:
+            metadata=json.loads(summary.read_text(encoding='utf-8-sig'))
+            if isinstance(metadata,dict):
+                uids=metadata.get('player_uids',[])
+                if isinstance(uids,list) and len(uids)>1:
+                    warnings.append(MULTI_ACCOUNT_WARNING);warnings_en.append(MULTI_ACCOUNT_WARNING_EN)
+                incomplete=metadata.get('incomplete_streams')
+                if isinstance(incomplete,list) and incomplete:
+                    warnings.append(CAPTURE_INCOMPLETE_WARNING);warnings_en.append(CAPTURE_INCOMPLETE_WARNING_EN)
+        except (OSError,ValueError,TypeError):pass
     directory=export/'json'
-    if not directory.is_dir():return report(phase='complete',readable=False,warning='未找到解码JSON，无法确认清单完整性。')
+    if not directory.is_dir():
+        message='未找到解码JSON，无法确认清单完整性。'
+        return report(phase='complete',readable=False,warning=' '.join([message,*warnings]),
+                      warning_en=' '.join(['No decoded JSON was found, so checklist completeness cannot be confirmed.',*warnings_en]))
     for path in sorted(directory.glob('*.json')):
         match=re.search(r'_s2c_\d+_([A-Za-z0-9_]+)\.json$',path.name)
         if not match or match.group(1) not in RELEVANT:continue
         try:observe(match.group(1),json.loads(path.read_text(encoding='utf-8-sig')),counts,empty)
         except (ValueError,TypeError,OSError):continue
-    warning=''
-    summary=export/'summary.json'
-    if summary.is_file():
-        try:
-            metadata=json.loads(summary.read_text(encoding='utf-8-sig'))
-            warnings=[]
-            if len(metadata.get('player_uids',[]))>1:
-                warnings.append('本次流量包含多个账号，清单仅表示本次见过这些响应；不能作为单账号完整备份，请按账号分别采集。')
-            if metadata.get('tcp_gap_count') or metadata.get('trailing_bytes_count'):
-                warnings.append('检测到抓包缺口或未解码数据，备份可能不完整。')
-            gear=equipment_warning(counts)
-            if gear:warnings.append(gear)
-            warning=' '.join(warnings)
-        except (OSError,ValueError,TypeError):pass
-    return report(counts,empty,phase='complete',readable=True,warning=warning)
+    return report(counts,empty,phase='complete',readable=True,warning=' '.join(warnings),
+                  warning_en=' '.join(warnings_en))
 
 
 def load_decoder(tool):

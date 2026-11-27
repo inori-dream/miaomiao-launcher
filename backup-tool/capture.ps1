@@ -222,6 +222,17 @@ try {
                     try {
                         $arguments = '-B -X utf8 "' + $observer + '" watch --capture-root "' + $sessionPath + '"'
                         $liveWorker = Start-Process -FilePath $python -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $liveDir 'observer.log') -RedirectStandardError (Join-Path $liveDir 'observer.err.log')
+                        # Persist the identity of the helper we just started. The
+                        # launcher's cleanup reaps only processes backed by such a
+                        # record, so a user's own capture_checklist run is never
+                        # stopped by a command-line match alone.
+                        $liveIdentity = @{
+                            Id      = [int]$liveWorker.Id
+                            Path    = $python
+                            Started = $liveWorker.StartTime.ToUniversalTime().ToString('o')
+                            Owned   = $true
+                        } | ConvertTo-Json -Compress
+                        [IO.File]::WriteAllText((Join-Path $liveDir 'helper-record.json'), $liveIdentity, [Text.UTF8Encoding]::new($false))
                     } catch { Write-Host '实时清单暂不可用，结束后仍会核对完整产物。' }
                 }
                 Show-CaptureGuide
