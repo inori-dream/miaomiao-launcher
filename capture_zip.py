@@ -12,6 +12,7 @@ import stat
 import unicodedata
 import uuid
 import zipfile
+import zlib
 
 from privacy_check import reject_secrets, scan_text
 
@@ -211,7 +212,7 @@ def read_member(archive: zipfile.ZipInfo | zipfile.ZipFile, item: zipfile.ZipInf
     try:
         with archive.open(info) as stream:
             data = stream.read(limit + 1)
-    except (zipfile.BadZipFile, RuntimeError, NotImplementedError, EOFError) as error:
+    except (zipfile.BadZipFile, RuntimeError, NotImplementedError, EOFError, zlib.error) as error:
         raise _unsafe('Account ZIP member integrity validation failed.') from error
     if len(data) > limit:
         raise _unsafe('An account ZIP member expands beyond the safety limit.')

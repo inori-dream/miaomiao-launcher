@@ -40,6 +40,18 @@ function ConvertTo-RvaOffset([byte[]]$Bytes, [int]$Rva, [object[]]$Sections) {
     throw "Invalid PE RVA: $Rva"
 }
 
+function Write-AllBytesRetry([string]$Path, [byte[]]$Bytes) {
+    for ($attempt = 0; $attempt -lt 10; $attempt++) {
+        try {
+            [IO.File]::WriteAllBytes($Path, $Bytes)
+            return
+        } catch [IO.IOException] {
+            if ($attempt -eq 9) { throw }
+            Start-Sleep -Milliseconds 100
+        }
+    }
+}
+
 function Save-DeterministicAssembly([string]$Path) {
     # Framework csc 14.x has no /deterministic switch. Clear the two varying PE
     # fields and derive the CLR module MVID from the normalized image itself.
@@ -127,7 +139,7 @@ function Save-DeterministicAssembly([string]$Path) {
         $sha = [Security.Cryptography.SHA256]::Create()
         try { $digest = $sha.ComputeHash($bytes) } finally { $sha.Dispose() }
         [Array]::Copy($digest, 0, $bytes, $guidOffset, 16)
-        [IO.File]::WriteAllBytes($Path, $bytes)
+        Write-AllBytesRetry $Path $bytes
     } finally {
         $reader.Dispose()
         $stream.Dispose()

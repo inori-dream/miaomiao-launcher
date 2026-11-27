@@ -54,7 +54,14 @@ function Read-StateFile([string]$File) {
 function Preserve-CorruptState([string]$File) {
     [IO.Directory]::CreateDirectory((Split-Path -Parent $File)) | Out-Null
     $taskEvidence = "$File.corrupt-$([DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fff'))-$([Guid]::NewGuid().ToString('N')).json"
-    [IO.File]::Move($File,$taskEvidence)
+    try {
+        [IO.File]::Move($File,$taskEvidence)
+    } catch [IO.IOException] {
+        # A scanner or another process may briefly hold the corrupt file open.
+        # Preserve its bytes before removing the untrusted primary.
+        [IO.File]::Copy($File,$taskEvidence,$true)
+        [IO.File]::Delete($File)
+    }
     return $taskEvidence
 }
 function Read-State {
@@ -161,6 +168,8 @@ function Test-OwnedRecord($Record) {
     if (-not $Record -or $Record.Owned -ne $true) { return $false }
     if ($Record.Id -isnot [int] -and $Record.Id -isnot [long]) { return $false }
     if ([int]$Record.Id -le 0 -or [string]::IsNullOrWhiteSpace([string]$Record.Path)) { return $false }
+    $hasTicks = $Record.PSObject.Properties['startedTicks'] -and $Record.startedTicks -is [long]
+    if ($hasTicks -and $Record.startedTicks -gt 0) { return $true }
     if ([string]::IsNullOrWhiteSpace([string]$Record.Started)) { return $false }
     try { $null=[DateTimeOffset]::Parse([string]$Record.Started) } catch { return $false }
     return $true
@@ -170,11 +179,16 @@ function Process-Matches($Record,[string]$ExpectedPath) {
     if ($ExpectedPath -and -not [string]::Equals([string]$Record.Path,$ExpectedPath,[StringComparison]::OrdinalIgnoreCase)) { return $false }
     try {
         $taskProcess = Get-Process -Id $Record.Id -ErrorAction Stop
-        # Python emits microsecond ISO timestamps while .NET renders 100ns ticks.
-        # Compare parsed tick values instead of strings with different precision.
-        $taskExpected=[DateTimeOffset]::Parse([string]$Record.Started).UtcDateTime.Ticks
-        $taskActual=$taskProcess.StartTime.ToUniversalTime().Ticks
-        return $taskProcess.Path -and [string]::Equals($taskProcess.Path,[string]$Record.Path,[StringComparison]::OrdinalIgnoreCase) -and ([Math]::Abs([double]($taskExpected-$taskActual)) -le 10)
+        $taskActual = $taskProcess.StartTime.ToUniversalTime().Ticks
+        if ($Record.PSObject.Properties['startedTicks'] -and $Record.startedTicks -is [long]) {
+            # service_runner records Windows FILETIME (1601 epoch); .NET uses 0001.
+            $taskExpected = [long]$Record.startedTicks + 504911232000000000
+            $taskSameStart = $taskExpected -eq $taskActual
+        } else {
+            $taskExpected = [DateTimeOffset]::Parse([string]$Record.Started).UtcDateTime.Ticks
+            $taskSameStart = [Math]::Abs([double]($taskExpected-$taskActual)) -le 10
+        }
+        return $taskProcess.Path -and [string]::Equals($taskProcess.Path,[string]$Record.Path,[StringComparison]::OrdinalIgnoreCase) -and $taskSameStart
     } catch { return $false }
 }
 function Stop-Descendants($RootRecord,[string]$ExpectedPath) {
@@ -321,7 +335,7 @@ function Start-Background([string]$Executable,[string]$Directory,[string]$Name,[
     if (-not [string]::Equals([string]$taskData.path,$Executable,[StringComparison]::OrdinalIgnoreCase)) { throw 'Service launcher returned the wrong executable path.' }
     # Use the identity produced by the launcher. Re-querying by PID here races
     # with an immediate child crash and can lose the only cleanup record.
-    return [pscustomobject]@{ Id=[int]$taskData.pid; Path=[string]$taskData.path; Started=[string]$taskData.Started; Owned=$true }
+    return [pscustomobject]@{ Id=[int]$taskData.pid; Path=[string]$taskData.path; Started=[string]$taskData.Started; startedTicks=[long]$taskData.startedTicks; Owned=$true }
 }
 function Wait-Ready([string]$Address,[int]$Port,$Record,[int]$Attempts=80) {
     for ($taskAttempt=0;$taskAttempt -lt $Attempts;$taskAttempt++) {

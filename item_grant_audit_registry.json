@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "functions": {
+    "miaomiao-launcher/capture_import.py::build_player": {
+      "callCount": 0,
+      "calls": [],
+      "category": "import",
+      "idempotency": "pure-builder-no-write",
+      "transaction": "none",
+      "durability": "none"
+    },
+    "miaomiao-launcher/capture_import.py::_write_database": {
+      "callCount": 0,
+      "calls": [],
+      "category": "import",
+      "idempotency": "uid-conflict-check",
+      "transaction": "sqlite-begin-immediate",
+      "durability": "sqlite-commit"
+    },
+    "miaomiao-launcher/capture_import.py::import_capture": {
+      "callCount": 2,
+      "calls": [
+        "build_player@1016",
+        "_write_database@1052"
+      ],
+      "category": "import",
+      "idempotency": "uid-conflict-check",
+      "transaction": "sqlite-plus-filesystem-journal-recovery",
+      "durability": "journal-staging-db-commit-rename"
+    },
+    "miaomiao-launcher/official_import.py::import_account": {
+      "callCount": 1,
+      "calls": [
+        "import_capture@159"
+      ],
+      "category": "import",
+      "idempotency": "preflight-and-uid-conflict-check",
+      "transaction": "delegates-to-journaled-import-capture",
+      "durability": "journal-staging-db-commit-rename"
+    },
+    "miaomiao-launcher/backup-tool/import_to_ofps.py::import_backup": {
+      "callCount": 0,
+      "calls": [],
+      "category": "import",
+      "idempotency": "uid-and-username-conflict-check",
+      "transaction": "sqlite-context-transaction",
+      "durability": "sqlite-commit"
+    }
+  }
+}

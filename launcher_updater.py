@@ -61,6 +61,17 @@ def _mkdir(path):
     _guard(path)
 
 
+def _rename(source, destination):
+    for attempt in range(10):
+        try:
+            os.rename(source, destination)
+            return
+        except OSError as error:
+            if getattr(error, 'winerror', None) not in (5, 32, 33) or attempt == 9:
+                raise
+            time.sleep(0.1)
+
+
 def _atomic(path, raw):
     _guard(path)
     temp = path.with_name(path.name+'.'+uuid.uuid4().hex+'.tmp')
@@ -77,6 +88,13 @@ def _atomic(path, raw):
         _guard(temp)
         if temp.exists():
             temp.unlink()
+
+
+def _stream_sha256(stream):
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+        digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _event(stream, **event):
@@ -217,7 +235,7 @@ def check_update(root, edition, current_version, force=False, transport=None, st
                     if payload.stat().st_size != asset['size']:
                         raise TrustError('cached payload size mismatch')
                     with payload.open('rb') as source:
-                        if hashlib.file_digest(source,'sha256').hexdigest() != asset['sha256']:
+                        if _stream_sha256(source) != asset['sha256']:
                             raise TrustError('cached payload hash mismatch')
                     _zip_validate(payload, asset)
                     restored = dict(result, status='downloaded', version=manifest['version'], stage_dir=str(stage))
@@ -275,7 +293,7 @@ def check_update(root, edition, current_version, force=False, transport=None, st
                 if p.stat().st_size != asset['size']:
                     raise TrustError('staged payload size mismatch')
                 with p.open('rb') as source:
-                    digest = hashlib.file_digest(source,'sha256').hexdigest()
+                    digest = _stream_sha256(source)
                 if digest != asset['sha256']:
                     raise TrustError('staged payload hash mismatch')
                 _zip_validate(p, asset)
@@ -288,7 +306,7 @@ def check_update(root, edition, current_version, force=False, transport=None, st
                 _atomic(temp/'manifest.sig', sig)
                 _guard(stage)
                 _guard(temp)
-                os.rename(temp, stage)
+                _rename(temp, stage)
                 temp = None
             result.update(status='downloaded', stage_dir=str(stage))
         _atomic(state, json.dumps(dict(result, checked_at=time.time(), edition=edition, current_version=current_version)).encode())

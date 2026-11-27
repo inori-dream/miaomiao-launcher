@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "version": "1.3.0",
+  "version": "1.4.9",
   "artifacts": {
     "CN": {
       "file": "OverFieldLauncher.exe",
@@ -51,9 +51,11 @@
   },
   "launcherSources": [
     "Launcher.cs",
+    "Friendly.cs",
     "SeasideUI.cs",
     "RoomManagerForm.cs",
     "Strings.cs",
+    "UpdaterUI.cs",
     "launcher.manifest",
     "launcher.ico"
   ],

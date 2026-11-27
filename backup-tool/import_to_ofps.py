@@ -24,6 +24,177 @@ DEFAULT_OFPS_DIR = SCRIPT_DIR.parent / "of-ps"
 OFPS_DIR: Path | None = None
 IMPORT_ERRORS = (OSError, ValueError, sqlite3.Error, BadZipFile, RuntimeError, OverflowError, zlib.error)
 MAX_PACKET_BYTES = 64 * 1024 * 1024
+MAX_INT64 = (1 << 63) - 1
+MAX_UINT32 = (1 << 32) - 1
+_INSTANCE_FIELDS = {
+    "weapon": ("weapon_id", 2),
+    "armor": ("armor_id", 3),
+    "poster": ("poster_id", 5),
+    "pet": ("item_id", 56),
+}
+
+
+def _config_rows(document: dict, upper_name: str, lower_name: str) -> list[dict]:
+    section = document.get(upper_name) if isinstance(document, dict) else None
+    rows = section.get("Datas") if isinstance(section, dict) else None
+    if rows is None and isinstance(document, dict):
+        section = document.get(lower_name)
+        rows = section.get("datas") if isinstance(section, dict) else None
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise ValueError(f"权威 {upper_name} 配置格式无效。")
+    return rows
+
+
+def load_import_configs(ofps_dir: Path | None = None) -> dict:
+    """Load the same Item/Character tables used by of-ps item_mgr."""
+    root = (ofps_dir or OFPS_DIR)
+    if root is None:
+        configure_ofps()
+        root = OFPS_DIR
+    data_dir = Path(root) / "resources" / "data"
+    try:
+        item_doc = json.loads((data_dir / "Item.json").read_text(encoding="utf-8-sig"))
+        character_doc = json.loads((data_dir / "Character.json").read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("无法读取 of-ps 权威 Item/Character 配置，拒绝导入。") from exc
+    items = {}
+    for row in _config_rows(item_doc, "Item", "item"):
+        item_id = row.get("i_d", row.get("ID"))
+        tag = row.get("new_bag_item_tag", row.get("NewBagItemTag"))
+        if isinstance(item_id, bool) or not isinstance(item_id, int) or not 0 < item_id <= MAX_UINT32:
+            raise ValueError("权威 Item 配置包含无效物品 ID。")
+        if isinstance(tag, bool) or not isinstance(tag, int) or not 0 <= tag <= 58:
+            raise ValueError(f"权威 Item 配置包含无效 tag: {item_id}。")
+        if item_id in items:
+            raise ValueError(f"权威 Item 配置包含重复物品 ID: {item_id}。")
+        items[item_id] = tag
+    characters = {}
+    for row in _config_rows(character_doc, "Character", "character"):
+        item_id = row.get("i_d", row.get("ID"))
+        if isinstance(item_id, bool) or not isinstance(item_id, int) or not 0 < item_id <= MAX_UINT32:
+            raise ValueError("权威 Character 配置包含无效角色 ID。")
+        if item_id in characters:
+            raise ValueError(f"权威 Character 配置包含重复角色 ID: {item_id}。")
+        characters[item_id] = 7
+    return {"items": items, "characters": characters}
+
+
+def _import_config_tag(configs: dict, item_id: int, label: str) -> int:
+    tag = configs["items"].get(item_id, configs["characters"].get(item_id))
+    if tag is None:
+        raise ValueError(f"{label} 引用未知物品 ID {item_id}。")
+    return tag
+
+
+def _import_count(num: int, label: str) -> int:
+    if isinstance(num, bool) or not isinstance(num, int) or not 0 <= num <= MAX_INT64:
+        raise ValueError(f"{label} 数量必须在 0..MaxInt64 范围内。")
+    return num
+
+
+def validate_import_item_detail(detail, configs: dict, label: str) -> int:
+    """Validate one ItemDetail; return its positive instance ID, if any."""
+    main = detail.main_item
+    item_id = int(main.item_id)
+    expected_tag = _import_config_tag(configs, item_id, label)
+    if int(main.item_tag) != expected_tag:
+        raise ValueError(f"{label} 的 tag 与权威 Item/Character 配置不一致。")
+    which = main.WhichOneof("item")
+    if not which:
+        raise ValueError(f"{label} 缺少物品内容。")
+    expected_fields = {2: "weapon", 3: "armor", 5: "poster", 56: "pet", 7: "character"}
+    expected_field = expected_fields.get(expected_tag)
+    if expected_field is not None and which != expected_field:
+        raise ValueError(f"{label} 的物品内容与权威 tag 不一致。")
+    if expected_tag in (17, 21) and which != ("inscription" if expected_tag == 17 else "outfit"):
+        raise ValueError(f"{label} 的物品内容与权威 tag 不一致。")
+    if which == "base_item":
+        if int(main.base_item.item_id) != item_id:
+            raise ValueError(f"{label} 的 base_item.item_id 与 main_item.item_id 不一致。")
+        _import_count(int(main.base_item.num), label)
+        return 0
+    payload = getattr(main, which)
+    if expected_tag in (2, 3, 5, 56):
+        id_field = _INSTANCE_FIELDS[which][0]
+        if int(getattr(payload, id_field)) != item_id:
+            raise ValueError(f"{label} 的物品 ID 与 main_item.item_id 不一致。")
+        instance_id = int(payload.instance_id)
+        if not 0 < instance_id <= MAX_UINT32:
+            raise ValueError(f"{label} 的 instance_id 无效。")
+        return instance_id
+    id_field = {
+        "character": "character_id", "outfit": "outfit_id",
+        "inscription": "inscription_id", "treasure": "item_id",
+    }.get(which)
+    if id_field is not None and int(getattr(payload, id_field)) != item_id:
+        raise ValueError(f"{label} 的物品 ID 与 main_item.item_id 不一致。")
+    return 0
+
+
+def validate_import_base_item(base, configs: dict, label: str) -> None:
+    item_id = int(base.item_id)
+    tag = _import_config_tag(configs, item_id, label)
+    if tag in (2, 3, 5, 56, 7, 17, 21):
+        raise ValueError(f"{label} 不是可堆叠物品。")
+    _import_count(int(base.num), label)
+
+
+def validate_backup_economy(pmd, pack_notices, mail_responses, configs: dict) -> None:
+    """Validate every inventory/mail item before import_backup performs any INSERT."""
+    instances = set()
+    character_ids = set()
+    for required_id in (10, 11):
+        _import_config_tag(configs, required_id, '导入兜底货币')
+    for character_id in (int(pmd.team.char1) or 101001, int(pmd.team.char2), int(pmd.team.char3)):
+        if character_id and character_id not in configs['characters']:
+            raise ValueError(f"备份队伍包含未知角色 ID {character_id}。")
+    for character in pmd.characters:
+        character_id = int(character.character_id)
+        if character_id not in configs["characters"]:
+            raise ValueError(f"备份包含未知角色 ID {character_id}。")
+        if character_id in character_ids:
+            raise ValueError(f"备份包含重复角色 ID {character_id}。")
+        character_ids.add(character_id)
+    for source, notice in pack_notices:
+        local_stack_ids = set()
+        for index, detail in enumerate(notice.items):
+            label = f"{source} 背包物品 {index}"
+            instance_id = validate_import_item_detail(detail, configs, label)
+            if instance_id:
+                if instance_id in instances:
+                    raise ValueError(f"备份包含重复物品实例 {instance_id}。")
+                instances.add(instance_id)
+            else:
+                item_id = int(detail.main_item.item_id)
+                if item_id in local_stack_ids:
+                    raise ValueError(f"{source} 包含重复堆叠物品 {item_id}。")
+                local_stack_ids.add(item_id)
+    mail_ids = set()
+    for source, response in mail_responses:
+        for mail in response.mails:
+            mail_id = int(mail.mail_id)
+            if mail_id in mail_ids:
+                raise ValueError(f"备份包含重复邮件 ID {mail_id}。")
+            mail_ids.add(mail_id)
+            mail_totals = {}
+            for index, detail in enumerate(mail.reward):
+                label = f"{source} 邮件 {mail_id} 附件 {index}"
+                instance_id = validate_import_item_detail(detail, configs, label)
+                if instance_id:
+                    if instance_id in instances:
+                        raise ValueError(f"备份包含重复物品实例 {instance_id}。")
+                    instances.add(instance_id)
+                elif detail.main_item.WhichOneof("item") == "base_item":
+                    item_id = int(detail.main_item.item_id)
+                    mail_totals[item_id] = mail_totals.get(item_id, 0) + int(detail.main_item.base_item.num)
+            for index, base in enumerate(mail.items):
+                label = f"{source} 邮件 {mail_id} 附件 {index}"
+                validate_import_base_item(base, configs, label)
+                item_id = int(base.item_id)
+                mail_totals[item_id] = mail_totals.get(item_id, 0) + int(base.num)
+            for item_id, total in mail_totals.items():
+                _import_count(total, f"邮件 {mail_id} 物品 {item_id} 合计")
+
 
 
 def is_ofps_directory(path: Path) -> bool:
@@ -194,6 +365,21 @@ def import_backup(
         if player is not None and player != (None, pickle.dumps([]), pickle.dumps((101001, 0, 0)), 0):
             raise ValueError(f"UID {player_id} 已有存档。")
 
+        # Validate the complete economy inside the write transaction and before
+        # the first INSERT. A malformed backup must not create even a login row.
+        configs = load_import_configs()
+        pack_notices = []
+        for pack_file in find_bins(raw_dir, "PackNotice"):
+            notice = net_pb2.PackNotice()
+            notice.ParseFromString(read_backup_member(pack_file))
+            pack_notices.append((pack_file.name, notice))
+        mail_responses = []
+        for mail_file in find_bins(raw_dir, "GetMailsRsp"):
+            response = net_pb2.GetMailsRsp()
+            response.ParseFromString(read_backup_member(mail_file))
+            mail_responses.append((mail_file.name, response))
+        validate_backup_economy(pmd, pack_notices, mail_responses, configs)
+
         login_rsp = net_pb2.PlayerLoginRsp()
         login_files = find_bins(raw_dir, "PlayerLoginRsp")
         if login_files:
@@ -289,9 +475,7 @@ def import_backup(
         has_item_10 = False
         has_item_11 = False
 
-        for pack_file in find_bins(raw_dir, "PackNotice"):
-            pn = net_pb2.PackNotice()
-            pn.ParseFromString(read_backup_member(pack_file))
+        for _pack_name, pn in pack_notices:
             for it in pn.items:
                 blob = it.SerializeToString()
                 iid = get_instance_id_of_item(it)
@@ -405,9 +589,7 @@ def import_backup(
 
         # 8. 写入邮件
         mail_cnt = 0
-        for mf in find_bins(raw_dir, "GetMailsRsp"):
-            mr = net_pb2.GetMailsRsp()
-            mr.ParseFromString(read_backup_member(mf))
+        for _mail_name, mr in mail_responses:
             for m in mr.mails:
                 conn.execute(
                     "INSERT OR REPLACE INTO mail (player_id, mail_id, mail_blob) VALUES (?, ?, ?)",

@@ -130,14 +130,16 @@ def _open_verified_process(record):
     try:
         identity = process_record(record['pid'], record['path'], record['startedTicks'])
     except Exception:
-        _close_process(handle)
+        if _wait_for_exit(handle, 0) != _WAIT_TIMEOUT:
+            raise ProcessLookupError(f'Process {record["pid"]} exited before cleanup.')
         raise
     # Query the already-open handle too.  The PID cannot be recycled while this
     # handle is retained, so subsequent termination addresses the same object.
     try:
         path, started = _identity_from_handle(handle)
     except Exception:
-        _close_process(handle)
+        if _wait_for_exit(handle, 0) != _WAIT_TIMEOUT:
+            raise ProcessLookupError(f'Process {record["pid"]} exited before cleanup.')
         raise
     if not _same_path(path, record['path']) or int(started) != int(record['startedTicks']):
         _close_process(handle)
@@ -260,6 +262,8 @@ def terminate_process_tree(record):
                     raise TimeoutError(f'Timed out stopping process {identity["pid"]}.')
             except Exception as error:
                 errors.append(f'{identity["path"]} (PID {identity["pid"]}): {error}')
+    except ProcessLookupError:
+        return
     except Exception as error:
         errors.append(str(error))
     finally:
@@ -345,19 +349,10 @@ def launch_quicksdk(executable, cwd, stdout_path, stderr_path, environment):
     import sys
     from taptap_private_runner import validated_config
     executable = str(Path(executable).resolve())
-    host = environment.get('LOLO_DISPATCH_HOST', '')
-    port = int(environment.get('LOLO_DISPATCH_PORT', '0'))
-    uid = int(environment.get('LOLO_SDK_UID', '0'))
-    validated_config(Path(executable).parent, host, port, uid)
-    import frida  # fail before spawning if the portable adapter dependency is missing
     token = uuid.uuid4().hex
     result_path = Path(stdout_path).with_name('quicksdk-start-' + token + '.json')
     pid_path = Path(stdout_path).with_name('quicksdk-pid-' + token + '.json')
     evidence_path = result_path.with_name('quicksdk-failure-' + token + '.json')
-    command = [sys.executable, '-X', 'utf8', str(Path(__file__).with_name('taptap_private_runner.py')),
-               '--client', str(Path(executable).parent), '--host', host, '--port', str(port),
-               '--uid', str(uid), '--log', str(Path(stdout_path).with_name('quicksdk-local.jsonl')),
-               '--result-path', str(result_path), '--pid-path', str(pid_path)]
     worker = None
     ready_pid = None
     spawned_pid = None
@@ -366,11 +361,20 @@ def launch_quicksdk(executable, cwd, stdout_path, stderr_path, environment):
     failure = None
     result = None
     try:
+        host = environment.get('LOLO_DISPATCH_HOST', '')
+        port = int(environment.get('LOLO_DISPATCH_PORT', '0'))
+        uid = int(environment.get('LOLO_SDK_UID', '0'))
+        validated_config(Path(executable).parent, host, port, uid)
+        import frida  # fail before spawning if the portable adapter dependency is missing
+        command = [sys.executable, '-X', 'utf8', str(Path(__file__).with_name('taptap_private_runner.py')),
+                   '--client', str(Path(executable).parent), '--host', host, '--port', str(port),
+                   '--uid', str(uid), '--log', str(Path(stdout_path).with_name('quicksdk-local.jsonl')),
+                   '--result-path', str(result_path), '--pid-path', str(pid_path)]
         with open(stdout_path, 'ab', buffering=0) as out, open(stderr_path, 'ab', buffering=0) as err:
             worker = subprocess.Popen(command, cwd=cwd, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
                                       close_fds=True, creationflags=subprocess.CREATE_NO_WINDOW,
                                       env=dict(os.environ, **environment))
-        deadline = time.monotonic() + 45
+        deadline = time.monotonic() + 180
         while time.monotonic() < deadline:
             pid_data = _read_json(pid_path)
             if pid_data:
@@ -424,6 +428,13 @@ def launch_quicksdk(executable, cwd, stdout_path, stderr_path, environment):
                 if isinstance(result_record.get('pid'), int):
                     spawned_pid = result_record['pid']
         if ready_pid is None:
+            # Result/PID JSON is only a hint, never kill authority. Recheck its
+            # complete identity against the owned executable before cleanup.
+            if spawned_record is not None:
+                try:
+                    process_record(spawned_record['pid'], executable, spawned_record['startedTicks'])
+                except Exception:
+                    spawned_record = None
             if worker is not None:
                 try:
                     _stop_worker(worker)

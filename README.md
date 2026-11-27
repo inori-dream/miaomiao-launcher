@@ -4,6 +4,8 @@ Windows 单机 / 局域网服务端管理启动器，支持本地 UID 登录、�
 
 当前版本 **v1.4.9**（2026-11-26）。历史变更见 [更新记录](RELEASE-NOTES.md)。
 
+> 本地加固分支额外包含客户端 marker/Junction 完整性、精确进程身份、QuickSDK 有界启动、备份完整性报告、导入日志恢复、失败矩阵和可复现构建。详见[本地加固说明](docs/hardening-v1.4.9.md)。
+
 ## 下载
 
 所有版本都在 [Releases](https://github.com/inori-dream/miaomiao-launcher/releases/latest) 页面。**请下载 `.zip` 附件，不要用 Code → Download ZIP**——那个下的是源码，不能直接运行。

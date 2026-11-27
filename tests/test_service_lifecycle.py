@@ -160,6 +160,12 @@ class ServiceRunnerLifecycleTests(unittest.TestCase):
         self.assertFalse(pid_path.exists())
         self.assertFalse(Path(str(pid_path) + '.tmp').exists())
 
+    def test_cleanup_treats_process_exit_race_as_success(self):
+        record = {'pid': 77, 'path': str(self.executable), 'startedTicks': 123}
+        with patch.object(service_runner, '_record_running', return_value=True), \
+             patch.object(service_runner, '_open_verified_process', side_effect=ProcessLookupError('exited')):
+            service_runner.terminate_process_tree(record)
+
     def test_verified_tree_is_killed_child_first(self):
         root = {'pid': 1, 'path': r'C:\task\server.exe', 'startedTicks': 100}
         child = {'pid': 2, 'path': r'C:\task\child.exe', 'startedTicks': 200}

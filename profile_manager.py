@@ -188,6 +188,8 @@ def prepare(root, base, mode, host):
     if not database.exists():
         from capture_import import schema_database
         schema_database(server / 'db/lolo.db', database)
+    from capture_import import recover_import
+    recover_import(profile, database)
     if not metadata.exists():
         write_json(metadata, {'mode': mode, 'createdAt': dt.datetime.now().isoformat(), 'schemaOnly': True})
     config = json.loads((server / 'config.json').read_text(encoding='utf-8-sig'))
@@ -213,11 +215,11 @@ def _same_file_hash(first, second):
 
 def _retry_file_operation(operation):
     """Retry only bounded Windows sharing/access races, never arbitrary I/O."""
-    for attempt in range(10):
+    for attempt in range(50):
         try:
             return operation()
         except OSError as error:
-            if getattr(error, 'winerror', None) not in (5, 32, 33) or attempt == 9:
+            if getattr(error, 'winerror', None) not in (5, 32, 33) or attempt == 49:
                 raise
             time.sleep(0.1)
 

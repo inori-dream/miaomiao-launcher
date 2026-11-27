@@ -20,6 +20,7 @@ sys.path.insert(0, str(BASE))
 
 import capture_import  # noqa: E402
 from capture_zip import (  # noqa: E402
+    archive_sha256,
     captured_uid,
     find_capture_prefix,
     open_secure_zip,
@@ -138,6 +139,11 @@ def import_account(path: Path, database: Path, login_uid: int | None, replace: b
                    allow_incomplete: bool = False) -> dict:
     """Import from a stable task-local snapshot; ``replace`` cannot bypass conflict checks."""
     database = Path(database).resolve()
+    profile = database.parent.parent
+    recovered = capture_import.recover_import(profile, database)
+    if recovered is not None and recovered.get('sha256') == archive_sha256(path):
+        recovered.update(uidSource='capture')
+        return recovered
     reviewed = plan(path, database, login_uid)
     if reviewed['conflict']:
         raise ValueError(

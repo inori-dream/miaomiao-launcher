@@ -99,7 +99,6 @@ def run(client,host,port,uid,log_path,result_path=None,pid_path=None):
     executable=client/'launcher.exe'
     # Revalidate after Python imports and immediately before process creation.
     validated_config(client,config['host'],config['port'],config['uid'])
-    _validated_cache(client)
     device=frida.get_local_device()
     ready=threading.Event(); done=threading.Event(); failed=[]
     log.parent.mkdir(parents=True,exist_ok=True)

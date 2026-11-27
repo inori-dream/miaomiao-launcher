@@ -41,7 +41,7 @@ class BackupTests(unittest.TestCase):
         payload = frame(1001, b'synthetic-request') + frame(1004, login.SerializeToString())
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory) / 'export'
-            with patch.object(parser, 'prepare_capture', side_effect=lambda path: path), patch.object(parser, 'list_tcp_streams', return_value=[0]), patch.object(parser, 'follow_tcp_stream', return_value=('127.0.0.1:40000', '127.0.0.1:11003', b'', payload, [])), contextlib.redirect_stdout(io.StringIO()):
+            with patch.object(parser, 'prepare_capture', side_effect=lambda path: path), patch.object(parser, 'list_tcp_streams', return_value=[0]), patch.object(parser, 'extract_tcp_stream_directions', return_value=('127.0.0.1:40000', '127.0.0.1:11003', b'', payload)), contextlib.redirect_stdout(io.StringIO()):
                 parser.analyze_pcap(Path('synthetic.pcapng'), out)
             summary = json.loads((out / 'summary.json').read_text(encoding='utf-8'))
             self.assertEqual(summary['omitted_login_requests'], 1)

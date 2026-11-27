@@ -16,6 +16,7 @@ import stat
 import time
 
 MARKER_SCHEMA = 2
+MAX_MARKER_BYTES = 16 * 1024 * 1024
 CORE_FILES = ('launcher.exe', 'GameAssembly.dll', 'launcher_Data/app.info')
 # These are the only directories shared with the installation. In particular,
 # yoo/DefaultPackage/ManifestFiles is copied: resource manifests are writable.
@@ -161,9 +162,16 @@ def read_ready_marker(marker):
     marker = Path(marker)
     if is_reparse_point(marker) or not marker.is_file():
         raise ValueError('Missing or linked client-ready marker.')
-    if marker.name != 'client-ready.json' or marker.stat().st_size > 1024 * 1024:
+    if marker.name != 'client-ready.json' or marker.stat().st_size > MAX_MARKER_BYTES:
         raise ValueError('Invalid client-ready marker.')
-    recorded = json.loads(marker.read_text(encoding='utf-8-sig'))
+    with marker.open('rb') as stream:
+        raw = stream.read(MAX_MARKER_BYTES + 1)
+    if len(raw) > MAX_MARKER_BYTES or is_reparse_point(marker):
+        raise ValueError('Client-ready marker changed or became linked while reading.')
+    try:
+        recorded = json.loads(raw.decode('utf-8-sig'))
+    except RecursionError as error:
+        raise ValueError('Client-ready marker JSON is too deeply nested.') from error
     if not isinstance(recorded, dict) or recorded.get('schema') != MARKER_SCHEMA:
         raise ValueError('Legacy or unsupported client-ready marker; rebuild the private copy.')
     if recorded.get('adapter') not in ('pcgamesdk', 'quicksdk-pc'):

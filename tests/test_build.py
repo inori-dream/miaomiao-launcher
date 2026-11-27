@@ -19,9 +19,10 @@ import tempfile
 import time
 import unittest
 
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 import privacy_check
 
-ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / 'release-build.json'
 CONFIG = json.loads(CONFIG_PATH.read_text(encoding='utf-8'))
 ARTIFACT_NAMES = [item['file'] for item in CONFIG['artifacts'].values()] + [CONFIG['sdk']['file']]
@@ -110,6 +111,7 @@ def pe_info(path):
 
 
 def powershell_json(script, environment=None):
+    script = "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)\n" + script
     encoded = base64.b64encode(script.encode('utf-16le')).decode('ascii')
     result = subprocess.run(
         ['powershell.exe', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
@@ -337,7 +339,7 @@ def verify_build(directory, report_path, logs, rebuild_directory=None):
                 'english': edition == 'EN', 'title': 'OverField · Local Launcher' if edition == 'EN' else '开放空间 · 本地启动器',
                 'start': 'Start game  →' if edition == 'EN' else '启动游戏  →',
                 'defaultMode': expected['defaultMode'], 'settingsFile': expected['settingsFile'],
-                'assemblyTitle': expected['assemblyTitle'], 'fileVersion': '1.3.0.0',
+                'assemblyTitle': expected['assemblyTitle'], 'fileVersion': CONFIG['version'] + '.0',
                 'informationalVersion': CONFIG['version'],
             }
             for key, value in wanted.items():

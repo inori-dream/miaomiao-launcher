@@ -50,17 +50,17 @@ if errorlevel 1 (
     echo Source privacy check failed. See "%LOGS%\privacy-source.log". 1>&2
     exit /b 1
 )
-"%PYTHON%" -m unittest test_build.BuildScriptTests test_editions > "%LOGS%\build-unit-tests.log" 2>&1
+"%PYTHON%" -m unittest tests.test_build.BuildScriptTests tests.test_editions > "%LOGS%\build-unit-tests.log" 2>&1
 if errorlevel 1 (
     echo Build contract tests failed. See "%LOGS%\build-unit-tests.log". 1>&2
     exit /b 1
 )
-"%PYTHON%" "%ROOT%test_build.py" --verify-build "%OUTPUT%" --rebuild-directory "%REPRO%" --report "%OUTPUT%\build-report.json" --logs "%LOGS%" > "%LOGS%\release-verification.log" 2>&1
+"%PYTHON%" "%ROOT%tests\test_build.py" --verify-build "%OUTPUT%" --rebuild-directory "%REPRO%" --report "%OUTPUT%\build-report.json" --logs "%LOGS%" > "%LOGS%\release-verification.log" 2>&1
 if errorlevel 1 (
     echo Release verification failed. See "%LOGS%\release-verification.log" and build-report.json. 1>&2
     exit /b 1
 )
-"%PYTHON%" "%ROOT%test_build.py" --write-hashes "%OUTPUT%"
+"%PYTHON%" "%ROOT%tests\test_build.py" --write-hashes "%OUTPUT%"
 if errorlevel 1 (
     echo Could not write SHA256SUMS.txt. 1>&2
     exit /b 1

@@ -33,6 +33,230 @@ BASE = Path(__file__).resolve().parent
 SCHEMA = json.loads((BASE / 'model_schema.json').read_text(encoding='utf-8'))
 ENUMS = SCHEMA['enums']
 _IDENTIFIER = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+MAX_INT64 = (1 << 63) - 1
+MAX_UINT32 = (1 << 32) - 1
+_INSTANCE_ITEM_TAGS = {2, 3, 5, 56}  # Weapon, Armor, Poster, Pet
+_ITEM_FIELD_TAGS = {
+    'itemWeaponMap': ('weaponId', 2, True),
+    'itemArmorMap': ('armorId', 3, True),
+    'itemPosterMap': ('posterId', 5, True),
+    'itemFashionMap': ('outfitId', 21, False),
+    'itemInscriptionMap': ('inscriptionId', 17, False),
+    'itemPetInfoMap': ('instanceId', 56, True),
+    'itemHeadMap': ('headId', 20, False),
+}
+
+
+def _config_id(value, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f'Authoritative {label} config contains a non-integer ID.')
+    if not 0 < value <= MAX_UINT32:
+        raise ValueError(f'Authoritative {label} config contains an invalid ID.')
+    return value
+
+
+def _read_item_config(path: Path) -> dict:
+    document = json.loads(path.read_text(encoding='utf-8-sig'))
+    section = document.get('Item') if isinstance(document, dict) else None
+    rows = section.get('Datas') if isinstance(section, dict) else None
+    if rows is None and isinstance(document, dict):
+        section = document.get('item')
+        rows = section.get('datas') if isinstance(section, dict) else None
+    if not isinstance(rows, list):
+        raise ValueError('Authoritative Item config is malformed.')
+    result = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError('Authoritative Item config is malformed.')
+        item_id = _config_id(row.get('i_d', row.get('ID')), 'Item')
+        tag = row.get('new_bag_item_tag', row.get('NewBagItemTag'))
+        if isinstance(tag, bool) or not isinstance(tag, int) or not 0 <= tag <= 58:
+            raise ValueError(f'Authoritative Item config has an invalid tag for item {item_id}.')
+        if item_id in result:
+            raise ValueError(f'Authoritative Item config contains duplicate item {item_id}.')
+        result[item_id] = tag
+    return result
+
+
+def _read_character_config(path: Path) -> dict:
+    document = json.loads(path.read_text(encoding='utf-8-sig'))
+    section = document.get('Character') if isinstance(document, dict) else None
+    rows = section.get('Datas') if isinstance(section, dict) else None
+    if rows is None and isinstance(document, dict):
+        section = document.get('character')
+        rows = section.get('datas') if isinstance(section, dict) else None
+    if not isinstance(rows, list):
+        raise ValueError('Authoritative Character config is malformed.')
+    result = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError('Authoritative Character config is malformed.')
+        item_id = _config_id(row.get('i_d', row.get('ID')), 'Character')
+        if item_id in result:
+            raise ValueError(f'Authoritative Character config contains duplicate character {item_id}.')
+        result[item_id] = 7  # EBagItemTag_Card
+    return result
+
+
+def load_authoritative_configs(profile=None, resource_dir=None) -> dict:
+    """Load one matching Item/Character configuration pair, never mixed versions."""
+    roots = []
+    if resource_dir is not None:
+        roots.append(Path(resource_dir))
+    elif profile is not None:
+        profile = Path(profile)
+        roots.extend((profile / 'Resource' / 'Excel', profile / 'server-kit' / 'Resource' / 'Excel'))
+    roots.append(BASE.parent / 'of-ps' / 'resources' / 'data')
+    seen = set()
+    for root in roots:
+        try:
+            root = root.resolve()
+        except OSError:
+            continue
+        if root in seen:
+            continue
+        seen.add(root)
+        upper = (root / 'Item.json', root / 'Character.json')
+        lower = (root / 'Item.json', root / 'Character.json')
+        item_path, character_path = upper
+        if not item_path.is_file() or not character_path.is_file():
+            continue
+        try:
+            return {
+                'items': _read_item_config(item_path),
+                'characters': _read_character_config(character_path),
+                'root': str(root),
+            }
+        except (OSError, json.JSONDecodeError) as error:
+            raise ValueError('Unable to read authoritative Item/Character configuration.') from error
+    raise ValueError('Authoritative Item/Character configuration is unavailable; refusing import.')
+
+
+def _import_tag(configs: dict, item_id: int, label: str) -> int:
+    tag = configs['items'].get(item_id)
+    if tag is None:
+        tag = configs['characters'].get(item_id)
+    if tag is None:
+        raise ValueError(f'{label} references unknown item ID {item_id}.')
+    return tag
+
+
+def _import_num(value, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f'{label} must be an integer.')
+    if value < 0 or value > MAX_INT64:
+        raise ValueError(f'{label} is outside the supported 0..MaxInt64 range.')
+    return value
+
+
+def _config_map(value, label: str) -> dict:
+    if not isinstance(value, dict):
+        raise ValueError(f'{label} is malformed.')
+    return value
+
+
+def validate_player_economy(saved: dict, configs: dict) -> None:
+    """Validate the complete serialized player economy before any database write."""
+    item = _config_map(saved.get('item'), 'Imported item state')
+    instances = set()
+    greatest_instance = 0
+
+    def check_common(data, item_id, expected_tag, label, *, key=None):
+        if not isinstance(data, dict):
+            raise ValueError(f'{label} is malformed.')
+        actual_id = data.get('itemId')
+        if isinstance(actual_id, bool) or not isinstance(actual_id, int) or actual_id != item_id:
+            raise ValueError(f'{label} item ID does not match its map key.')
+        if data.get('itemType') != expected_tag:
+            raise ValueError(f'{label} tag does not match authoritative Item/Character config.')
+        if key is not None and data.get('instanceId') != key:
+            raise ValueError(f'{label} instance ID does not match its map key.')
+
+    base_items = _config_map(item.get('itemBaseInfo'), 'Imported base items')
+    for raw_key, data in base_items.items():
+        try:
+            item_id = int(raw_key)
+        except (TypeError, ValueError) as error:
+            raise ValueError('Imported base item map has an invalid key.') from error
+        expected_tag = _import_tag(configs, item_id, 'Imported base item')
+        if expected_tag in _INSTANCE_ITEM_TAGS | {7, 17, 20, 21}:
+            raise ValueError(f'Item {item_id} is stored in the wrong inventory map.')
+        check_common(data, item_id, expected_tag, f'Base item {item_id}')
+        _import_num(data.get('num', 0), f'Base item {item_id} count')
+
+    for map_name, (id_field, expected_tag, instanced) in _ITEM_FIELD_TAGS.items():
+        values = _config_map(item.get(map_name), f'Imported {map_name}')
+        for raw_key, data in values.items():
+            try:
+                key = int(raw_key)
+            except (TypeError, ValueError) as error:
+                raise ValueError(f'{map_name} has an invalid key.') from error
+            if not isinstance(data, dict):
+                raise ValueError(f'{map_name} entry is malformed.')
+            item_id = data.get('itemId')
+            if isinstance(item_id, bool) or not isinstance(item_id, int):
+                raise ValueError(f'{map_name} entry has an invalid item ID.')
+            actual_tag = _import_tag(configs, item_id, f'{map_name} entry')
+            if actual_tag != expected_tag:
+                raise ValueError(f'{map_name} entry tag does not match authoritative Item config.')
+            if data.get(id_field) != item_id and not (instanced and id_field == 'instanceId'):
+                raise ValueError(f'{map_name} entry ID does not match its item ID.')
+            if instanced:
+                instance_id = data.get('instanceId')
+                if isinstance(instance_id, bool) or not isinstance(instance_id, int) or not 0 < instance_id <= MAX_UINT32:
+                    raise ValueError(f'{map_name} entry has an invalid instance ID.')
+                if key != instance_id:
+                    raise ValueError(f'{map_name} instance ID does not match its map key.')
+                if instance_id in instances:
+                    raise ValueError(f'Duplicate imported item instance {instance_id}.')
+                instances.add(instance_id)
+                greatest_instance = max(greatest_instance, instance_id)
+            elif key != data.get(id_field):
+                raise ValueError(f'{map_name} ID does not match its map key.')
+            check_common(data, item_id, expected_tag, f'{map_name} entry', key=key if instanced else None)
+            if data.get('num') != 1:
+                raise ValueError(f'{map_name} entry count must be one.')
+
+    furniture = _config_map(item.get('furnitureItemMap'), 'Imported furniture')
+    for raw_key, data in furniture.items():
+        try:
+            item_id = int(raw_key)
+        except (TypeError, ValueError) as error:
+            raise ValueError('Imported furniture map has an invalid key.') from error
+        if _import_tag(configs, item_id, 'Imported furniture') != 34:
+            raise ValueError(f'Furniture item {item_id} has the wrong authoritative tag.')
+        if not isinstance(data, dict) or data.get('itemId') != item_id:
+            raise ValueError('Imported furniture item ID does not match its map key.')
+        _import_num(data.get('num'), f'Furniture item {item_id} count')
+
+    characters = _config_map(_config_map(saved.get('character'), 'Imported character state').get('characterMap'),
+                             'Imported characters')
+    for raw_key, data in characters.items():
+        try:
+            character_id = int(raw_key)
+        except (TypeError, ValueError) as error:
+            raise ValueError('Imported character map has an invalid key.') from error
+        if character_id not in configs['characters']:
+            raise ValueError(f'Imported character ID {character_id} is unknown.')
+        check_common(data, character_id, 7, f'Character {character_id}')
+        if data.get('characterId') != character_id or data.get('num') != 1:
+            raise ValueError(f'Character {character_id} is malformed.')
+
+    instance_index = item.get('instanceIndex')
+    if isinstance(instance_index, bool) or not isinstance(instance_index, int):
+        raise ValueError('Imported instance index is invalid.')
+    if not greatest_instance < instance_index <= MAX_UINT32:
+        raise ValueError('Imported instance index does not follow all item instances.')
+
+    team = _config_map(_config_map(saved.get('team'), 'Imported team state').get('TeamInfo'),
+                       'Imported team')
+    for key in ('Char1', 'Char2', 'Char3'):
+        character_id = team.get(key, 0)
+        if isinstance(character_id, bool) or not isinstance(character_id, int):
+            raise ValueError('Imported team contains an invalid character ID.')
+        if character_id and character_id not in configs['characters']:
+            raise ValueError(f'Imported team references unknown character ID {character_id}.')
+
 
 
 def normalize(value):
@@ -125,6 +349,14 @@ def as_int(value, default=0):
     return default
 
 
+def _equipment_instance(value, label):
+    """Normalize an equipment reference without leaking container TypeErrors."""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError(f'{label} must be an integer.') from error
+
+
 def _same_value(first, second) -> bool:
     if type(first) is not type(second):
         return False
@@ -203,8 +435,20 @@ def model(kind, data):
                 return ENUMS[data]
             if not re.fullmatch(r'-?\d+', data.strip()):
                 raise ValueError('Capture contains an invalid numeric field.')
-            return int(data)
-        return data
+            value = int(data)
+        else:
+            value = data
+        if kind.startswith('uint'):
+            bits = int(kind[4:])
+            if value < 0 or value > (1 << bits) - 1:
+                raise ValueError(f'Capture contains a {kind} field outside its supported range.')
+        elif kind.startswith('int'):
+            bits = int(kind[3:])
+            if value < -(1 << (bits - 1)) or value > (1 << (bits - 1)) - 1:
+                raise ValueError(f'Capture contains an {kind} field outside its supported range.')
+        elif value < -(1 << 31) or value > (1 << 31) - 1:
+            raise ValueError('Capture contains an enum field outside its supported range.')
+        return value
     if kind == 'bool':
         # The server stores these as real JSON booleans; a number fails GPB
         # deserialization with "mismatch type bool with number at index ...".
@@ -426,82 +670,6 @@ def ensure_uid(database, uid):
             raise
 
 
-def garden_vector(value):
-    """The server stores Vector3 as plain {"x","y","z"} int32 (no omitempty)."""
-    value = value if isinstance(value, dict) else {}
-    return {axis: as_int(value.get(axis)) for axis in ('x', 'y', 'z')}
-
-
-def build_garden(main, entries):
-    """Build the of_home row the Lolo server reads when a player enters their garden.
-
-    The server keeps the garden in its own table: of_home.garden_furniture_info_map
-    holds a sonic-serialised map[int64]*FurnitureDetailsInfo, and
-    placed_character_map a serialised []*ScenePlacedCharacter. Skipping this table
-    made every imported account show an empty garden no matter how much furniture
-    the capture carried, so the layout is rebuilt here from the player's own 9999
-    snapshot.
-    """
-    uid = as_int(main.get('player_label')) or as_int(main.get('player_id'))
-    internal = as_int(main.get('player_id')) or uid
-    if not uid:
-        return None
-
-    # The player's own garden is the 9999 snapshot whose channel is this account.
-    best = None
-    for notice in as_list(entries.get('SceneDataNotice')):
-        data = (notice or {}).get('data') if isinstance(notice, dict) else None
-        if not isinstance(data, dict) or as_int(data.get('scene_id')) != 9999:
-            continue
-        channel = as_int(data.get('channel_id'))
-        label = as_int(data.get('channel_label'))
-        if uid not in (channel, label) and internal not in (channel, label):
-            continue
-        garden = data.get('scene_garden_data')
-        garden = garden if isinstance(garden, dict) else {}
-        furniture = as_mapping(garden.get('garden_furniture_info_map'))
-        if best is None or len(furniture) > len(best[1]):
-            best = (data, furniture, garden)
-
-    if best is None:
-        return None
-    data, furniture, garden = best
-
-    items = {}
-    for key, detail in furniture.items():
-        if not isinstance(detail, dict):
-            continue
-        furniture_id = as_int(detail.get('furniture_id'), as_int(key))
-        if furniture_id <= 0:
-            continue
-        stored = {
-            'furnitureId': furniture_id,
-            'furnitureItemId': as_int(detail.get('furniture_item_id')),
-            'pos': garden_vector(detail.get('pos')),
-            'rotation': garden_vector(detail.get('rotation')),
-        }
-        layer = as_int(detail.get('layer_num'))
-        if layer:
-            stored['layerNum'] = layer
-        items[str(furniture_id)] = stored
-
-    placed = [character for character in as_list(data.get('placed_characters'))
-              if isinstance(character, dict)]
-
-    return {
-        'scene_id': 9999,
-        'garden_name': garden.get('garden_name') or '',
-        'likes_num': as_int(garden.get('likes_num')),
-        'access_player_num': as_int(garden.get('access_player_num')),
-        'left_like_num': as_int(garden.get('left_like_num')),
-        'is_open': 1 if garden.get('is_open') else 0,
-        'password': garden.get('password') or '',
-        'password_expire_time': as_int(garden.get('password_expire_time')),
-        'furniture': items,
-        'placed': placed,
-    }
-
-
 def _nonnegative_count(value, label: str) -> int:
     if value is None:
         return 0
@@ -574,8 +742,10 @@ def capture_quality(main, entries, summary=None):
                                      ('GetPosterRsp', 'posters', 'poster')):
         for packet in entries.get(kind, []):
             for captured in as_list((packet or {}).get(collection)):
-                if isinstance(captured, dict) and int(captured.get('instance_id') or 0) > 0:
-                    available[bucket].add(int(captured['instance_id']))
+                if isinstance(captured, dict):
+                    instance = _equipment_instance(captured.get('instance_id'), 'Equipment instance ID')
+                    if instance > 0:
+                        available[bucket].add(instance)
     for packet in entries.get('PackNotice', []):
         for detail in as_list((packet or {}).get('items')):
             item = (detail or {}).get('main_item') if isinstance(detail, dict) else None
@@ -583,8 +753,10 @@ def capture_quality(main, entries, summary=None):
                 continue
             for key, bucket in (('weapon', 'weapon'), ('armor', 'armor'), ('poster', 'poster')):
                 value = item.get(key)
-                if isinstance(value, dict) and int(value.get('instance_id') or 0) > 0:
-                    available[bucket].add(int(value['instance_id']))
+                if isinstance(value, dict):
+                    instance = _equipment_instance(value.get('instance_id'), 'Equipment instance ID')
+                    if instance > 0:
+                        available[bucket].add(instance)
 
     referenced = {'weapon': set(), 'armor': set(), 'poster': set()}
     for captured in characters:
@@ -593,14 +765,19 @@ def capture_quality(main, entries, summary=None):
         for preset in as_list(captured.get('equipment_presets')):
             if not isinstance(preset, dict):
                 continue
-            if int(preset.get('weapon') or 0) > 0:
-                referenced['weapon'].add(int(preset['weapon']))
+            weapon = _equipment_instance(preset.get('weapon'), 'Weapon instance ID')
+            if weapon > 0:
+                referenced['weapon'].add(weapon)
             for arm in as_list(preset.get('armors')):
-                if isinstance(arm, dict) and int(arm.get('armor_id') or 0) > 0:
-                    referenced['armor'].add(int(arm['armor_id']))
+                if isinstance(arm, dict):
+                    instance = _equipment_instance(arm.get('armor_id'), 'Armor instance ID')
+                    if instance > 0:
+                        referenced['armor'].add(instance)
             for pos in as_list(preset.get('posters')):
-                if isinstance(pos, dict) and int(pos.get('poster_id') or 0) > 0:
-                    referenced['poster'].add(int(pos['poster_id']))
+                if isinstance(pos, dict):
+                    instance = _equipment_instance(pos.get('poster_id'), 'Poster instance ID')
+                    if instance > 0:
+                        referenced['poster'].add(instance)
 
     report['equippedReferences'] = {key: len(value) for key, value in referenced.items()}
     report['unresolvedEquipment'] = {
@@ -612,8 +789,9 @@ def capture_quality(main, entries, summary=None):
     return report
 
 
-def build_player(main, entries, report=None):
+def build_player(main, entries, report=None, *, configs=None, canonicalize_tags=False):
     report = report if report is not None else {}
+    configs = configs or load_authoritative_configs()
     if 'schemaRestore' not in report:
         from schema_restore import restore_capture
         report['schemaRestore'] = restore_capture(main, entries)
@@ -697,17 +875,31 @@ def build_player(main, entries, report=None):
             base = item.get('base_item')
             if isinstance(base, dict) and 'item_id' in base:
                 item_id = uint32(base['item_id'], label='Item ID')
+                if 'item_id' in item and uint32(item['item_id'], label='Item ID') != item_id:
+                    raise ValueError('Capture contains mismatched main and base item IDs.')
                 data = dict(base, item_type=as_int(item.get('item_tag')), pack_type=as_int(detail.get('pack_type')))
+                if canonicalize_tags:
+                    data['item_type'] = _import_tag(configs, item_id, 'Imported base item')
                 _put_unique(items['itemBaseInfo'], item_id, model('ItemBaseInfo', data), 'base items')
             fashion = item.get('outfit')
             if isinstance(fashion, dict) and not is_placeholder(fashion):
                 outfit_id = uint32(fashion.get('outfit_id', item.get('item_id')), label='Outfit ID')
                 data = dict(fashion, item_id=item.get('item_id'), outfit_id=outfit_id,
                             item_type=as_int(item.get('item_tag')), num=1)
+                if canonicalize_tags:
+                    data['item_type'] = _import_tag(configs, outfit_id, 'Imported outfit')
                 schemes = {}
                 raw_schemes = fashion.get('dye_schemes')
-                if isinstance(raw_schemes, dict) and not is_placeholder(raw_schemes) and not all(isinstance(v, dict) for v in raw_schemes.values()):
+                malformed_schemes = (
+                    isinstance(raw_schemes, dict)
+                    and (is_placeholder(raw_schemes)
+                         or not all(isinstance(v, dict) for v in raw_schemes.values()))
+                )
+                if malformed_schemes:
+                    # Preserve tolerant capture handling without importing an
+                    # item whose tag/payload cannot be trusted.
                     skipped += 1
+                    continue
                 for value in as_list(raw_schemes):
                     if isinstance(value, dict):
                         _put_unique(schemes, as_int(value.get('scheme_index'), len(schemes)), value, 'dye schemes')
@@ -734,19 +926,6 @@ def build_player(main, entries, report=None):
                 data = dict(captured, item_id=captured[id_key], item_type=tag, num=1, pack_type=0)
                 _put_unique(items[target], instance, model(kind, data), 'equipment instances')
     items['instanceIndex'] = greatest + 1
-    # Placed-furniture counts live in their own map; the server increments it via
-    # AddFurnitureItem and reports it through FurnitureItemInfo(), so an import that
-    # skips it makes every placed item look uncounted in the bag.
-    for entry in as_list(main.get('furniture_item_info')):
-        if not isinstance(entry, dict):
-            skipped += 1
-            continue
-        item_id = as_int(entry.get('item_id'))
-        if item_id <= 0:
-            skipped += 1
-            continue
-        items['furnitureItemMap'][str(item_id)] = model('FurnitureItemInfo', {
-            'itemId': item_id, 'num': as_int(entry.get('num'), 1)})
     variants = [
         ('weapon','itemWeaponMap','ItemWeaponInfo','weapon_id'),
         ('armor','itemArmorMap','ItemArmorInfo','armor_id'),
@@ -772,12 +951,25 @@ def build_player(main, entries, report=None):
                 data = dict(value, item_id=main_item.get('item_id', value.get(id_key)),
                             item_type=as_int(main_item.get('item_tag')),
                             pack_type=as_int(detail.get('pack_type')), num=1)
+                if canonicalize_tags:
+                    data['item_type'] = _import_tag(configs, as_int(data['item_id']), 'Imported equipment')
                 _merge_unique(items[target], key, model(kind, data), 'equipment instances')
     if greatest >= 0xFFFFFFFF:
         raise ValueError('Equipment instance index exceeds the supported range.')
+    for entry in as_list(main.get('furniture_item_info')):
+        if not isinstance(entry, dict):
+            skipped += 1
+            continue
+        item_id = as_int(entry.get('item_id'))
+        if item_id <= 0:
+            skipped += 1
+            continue
+        _put_unique(items['furnitureItemMap'], item_id, model('FurnitureItemInfo', {
+            'itemId': item_id, 'num': as_int(entry.get('num'), 1),
+        }), 'placed furniture')
     items['instanceIndex'] = greatest + 1
     team = as_mapping(main.get('team'))
-    return {
+    saved = {
         'instanceIndex': greatest + 1,
         'character': {'characterMap': character_map, 'placedCharacters': main.get('placed_characters', [])},
         'item': items,
@@ -787,6 +979,69 @@ def build_player(main, entries, report=None):
         }},
         'scene': {'worldLevel': as_int(main.get('world_level')),
                   'cur_pet_instance_id': as_int(main.get('pet_instance_id'))},
+    }
+    validate_player_economy(saved, configs)
+    return saved
+
+
+def garden_vector(value):
+    value = value if isinstance(value, dict) else {}
+    return {axis: as_int(value.get(axis)) for axis in ('x', 'y', 'z')}
+
+
+def build_garden(main, entries):
+    uid = as_int(main.get('player_label') or main.get('player_id'))
+    internal = as_int(main.get('player_id') or uid)
+    best = None
+    for notice in entries.get('SceneDataNotice', []):
+        data = (notice or {}).get('data')
+        if not isinstance(data, dict) or as_int(data.get('scene_id')) != 9999:
+            continue
+        channel = as_int(data.get('channel_id'))
+        label = as_int(data.get('channel_label'))
+        if uid not in (channel, label) and internal not in (channel, label):
+            continue
+        garden = data.get('scene_garden_data')
+        garden = garden if isinstance(garden, dict) else {}
+        furniture = garden.get('garden_furniture_info_map')
+        furniture = furniture if isinstance(furniture, dict) else {}
+        if best is None or len(furniture) > len(best[1]):
+            best = (data, furniture, garden)
+    if best is None:
+        return None
+    data, furniture, garden = best
+    items = {}
+    for key, detail in furniture.items():
+        if not isinstance(detail, dict):
+            continue
+        furniture_id = as_int(detail.get('furniture_id'), as_int(key))
+        if furniture_id <= 0:
+            continue
+        stored = {
+            'furnitureId': furniture_id,
+            'furnitureItemId': as_int(detail.get('furniture_item_id')),
+            'pos': garden_vector(detail.get('pos')),
+            'rotation': garden_vector(detail.get('rotation')),
+        }
+        layer = as_int(detail.get('layer_num'))
+        if layer:
+            stored['layerNum'] = layer
+        items[str(furniture_id)] = stored
+    placed = []
+    for character in as_list(data.get('placed_characters')):
+        if isinstance(character, dict):
+            placed.append(model('ScenePlacedCharacter', character) if SCHEMA['models'].get('ScenePlacedCharacter') else character)
+    return {
+        'scene_id': 9999,
+        'garden_name': garden.get('garden_name') or '',
+        'likes_num': as_int(garden.get('likes_num')),
+        'access_player_num': as_int(garden.get('access_player_num')),
+        'left_like_num': as_int(garden.get('left_like_num')),
+        'is_open': 1 if garden.get('is_open') else 0,
+        'password': garden.get('password') or '',
+        'password_expire_time': as_int(garden.get('password_expire_time')),
+        'furniture': items,
+        'placed': placed,
     }
 
 
@@ -940,7 +1195,8 @@ def _basic_values(main, uid: int, created: str, now: str) -> dict:
 
 
 def _write_database(database: Path, uid: int, created: str, now: str, payload: bytes, basic: dict,
-                    garden: dict = None) -> None:
+                    main: dict, entries: dict, on_commit=None) -> bool:
+    created_mapping = False
     with closing(sqlite3.connect(database, timeout=10, isolation_level=None)) as connection:
         connection.execute('PRAGMA foreign_keys=ON')
         connection.execute('PRAGMA trusted_schema=OFF')
@@ -952,6 +1208,7 @@ def _write_database(database: Path, uid: int, created: str, now: str, payload: b
             mapping = connection.execute('SELECT sdk_uid FROM of_user WHERE user_id=?', (uid,)).fetchone()
             if not mapping:
                 connection.execute('INSERT INTO of_user(user_id,sdk_uid,ban) VALUES(?,?,0)', (uid, uid))
+                created_mapping = True
             connection.execute(
                 'INSERT INTO of_game(user_id,created_at,updated_at,bin_data) VALUES(?,?,?,?)',
                 (uid, created, now, payload),
@@ -965,6 +1222,7 @@ def _write_database(database: Path, uid: int, created: str, now: str, payload: b
                 f'INSERT INTO of_game_basic({",".join(names)}) VALUES({",".join("?" for _ in names)})',
                 list(values.values()),
             )
+            garden = build_garden(main, entries)
             if garden is not None:
                 home_columns = {row[1] for row in connection.execute('PRAGMA table_info(of_home)')}
                 if {'user_id', 'scene_id', 'garden_furniture_info_map'} <= home_columns:
@@ -978,30 +1236,25 @@ def _write_database(database: Path, uid: int, created: str, now: str, payload: b
                         'is_open': garden['is_open'],
                         'password': garden['password'],
                         'password_expire_time': garden['password_expire_time'],
-                        # The server serialises with sonic and reads the column back
-                        # into map[int64]*FurnitureDetailsInfo, so this must be JSON.
                         'garden_furniture_info_map': json.dumps(
-                            garden['furniture'], ensure_ascii=False, separators=(',', ':'),
-                        ).encode('utf-8'),
+                            garden['furniture'], ensure_ascii=False, separators=(',', ':')).encode('utf-8'),
                         'placed_character_map': json.dumps(
-                            garden['placed'], ensure_ascii=False, separators=(',', ':'),
-                        ).encode('utf-8'),
+                            garden['placed'], ensure_ascii=False, separators=(',', ':')).encode('utf-8'),
                     }
                     row = {key: value for key, value in row.items() if key in home_columns}
                     keys = list(row)
-                    assignments = ','.join(
-                        f'{key}=excluded.{key}' for key in keys if key not in ('user_id', 'scene_id'))
                     connection.execute(
-                        f'INSERT INTO of_home({",".join(keys)}) VALUES({",".join("?" for _ in keys)}) '
-                        f'ON CONFLICT(user_id,scene_id) DO UPDATE SET {assignments}',
-                        list(row.values()),
-                    )
+                        f'INSERT INTO of_home({",".join(keys)}) VALUES({",".join("?" for _ in keys)})',
+                        list(row.values()))
             if account_state is not None:
                 _verify_account_state(connection, account_state, uid)
             connection.commit()
         except Exception:
             connection.rollback()
             raise
+    if on_commit is not None:
+        on_commit(created_mapping)
+    return created_mapping
 
 
 def _write_staged_json(path: Path, value) -> None:
@@ -1013,6 +1266,145 @@ def _write_staged_json(path: Path, value) -> None:
         os.fsync(output.fileno())
 
 
+def _journal_path(task: Path) -> Path:
+    return task / 'import-journal.json'
+
+
+def _read_journal(task: Path) -> dict:
+    path = _journal_path(task)
+    try:
+        value = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError('Import journal is unreadable; automatic recovery is required.') from error
+    if not isinstance(value, dict) or value.get('schema') != 'capture-import-journal/v1':
+        raise ValueError('Import journal is invalid; automatic recovery is required.')
+    uid = value.get('uid')
+    state = value.get('state')
+    if isinstance(uid, bool) or not isinstance(uid, int) or not 0 < uid <= MAX_UINT32:
+        raise ValueError('Import journal has an invalid UID.')
+    if state not in ('staged', 'db-committed', 'complete', 'rolled-back'):
+        raise ValueError('Import journal has an invalid state.')
+    if not isinstance(value.get('payloadSha256'), str) or not re.fullmatch(r'[0-9a-f]{64}', value['payloadSha256']):
+        raise ValueError('Import journal has an invalid payload fingerprint.')
+    return value
+
+
+def _write_journal(task: Path, journal: dict, state: str) -> dict:
+    updated = dict(journal, state=state)
+    path = _journal_path(task)
+    temporary = task / '.import-journal.tmp'
+    text = json.dumps(updated, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+    with temporary.open('w', encoding='utf-8') as output:
+        output.write(text)
+        output.flush()
+        os.fsync(output.fileno())
+    os.replace(temporary, path)
+    return updated
+
+
+def _database_payload_matches(database: Path, uid: int, payload_sha256: str) -> bool:
+    if not database.is_file():
+        return False
+    with closing(sqlite3.connect(database.resolve().as_uri() + '?mode=ro', uri=True, timeout=10)) as connection:
+        connection.execute('PRAGMA trusted_schema=OFF')
+        row = connection.execute('SELECT bin_data FROM of_game WHERE user_id=?', (uid,)).fetchone()
+    return row is not None and hashlib.sha256(row[0]).hexdigest() == payload_sha256
+
+
+def _rollback_database(database: Path, uid: int, journal: dict) -> None:
+    """Compensate only this import; never restore a whole DB over concurrent work."""
+    with closing(sqlite3.connect(database, timeout=10, isolation_level=None)) as connection:
+        connection.execute('PRAGMA foreign_keys=ON')
+        connection.execute('PRAGMA trusted_schema=OFF')
+        connection.execute('BEGIN IMMEDIATE')
+        try:
+            row = connection.execute('SELECT bin_data FROM of_game WHERE user_id=?', (uid,)).fetchone()
+            if row is not None:
+                if hashlib.sha256(row[0]).hexdigest() != journal['payloadSha256']:
+                    raise ValueError('Imported database row changed; refusing automatic rollback.')
+                connection.execute('DELETE FROM of_game WHERE user_id=?', (uid,))
+            elif connection.execute('SELECT 1 FROM of_game_basic WHERE user_id=?', (uid,)).fetchone():
+                raise ValueError('Imported account row is incomplete; refusing automatic rollback.')
+            connection.execute('DELETE FROM of_game_basic WHERE user_id=?', (uid,))
+            if connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='of_home'").fetchone():
+                connection.execute('DELETE FROM of_home WHERE user_id=?', (uid,))
+            if journal.get('createdUserMapping') is True:
+                connection.execute('DELETE FROM of_user WHERE user_id=? AND sdk_uid=?', (uid, uid))
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+
+
+def _published_import_report(destination: Path, uid: int):
+    if _no_link(destination) or not destination.is_dir():
+        return None
+    try:
+        report = json.loads((destination / 'import-report.json').read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return report if isinstance(report, dict) and report.get('uid') == uid else None
+
+
+def recover_import(profile, database=None, uid=None) -> dict | None:
+    """Complete or roll back journaled imports before normal UID conflict checks."""
+    profile = Path(profile).resolve()
+    database = Path(database) if database is not None else _profile_database(profile)
+    root = profile / 'runtime' / 'imports'
+    if not root.is_dir():
+        return None
+    if _no_link(root) or _no_link(root.parent):
+        raise ValueError('Unsafe profile import journal directory.')
+    recovered_report = None
+    for task in sorted(root.iterdir(), key=lambda path: path.name):
+        if not task.is_dir() or _no_link(task) or not _journal_path(task).is_file():
+            continue
+        journal = _read_journal(task)
+        journal_uid = journal['uid']
+        if uid is not None and journal_uid != uid:
+            continue
+        state = journal['state']
+        if state in ('complete', 'rolled-back'):
+            shutil.rmtree(task, ignore_errors=True)
+            continue
+        if state == 'staged':
+            if not _database_payload_matches(database, journal_uid, journal['payloadSha256']):
+                shutil.rmtree(task, ignore_errors=True)
+                continue
+            # Covers a crash after SQLite commit but before the journal update.
+            journal = _write_journal(task, journal, 'db-committed')
+            state = 'db-committed'
+        if state != 'db-committed':
+            raise ValueError('Import journal has an unsupported recovery state.')
+        destination = profile / 'accounts' / str(journal_uid)
+        staged = task / 'account'
+        report = _published_import_report(destination, journal_uid)
+        if report is None and (destination.exists() or _no_link(destination)):
+            # A foreign path won the race. Roll back rather than overwrite it.
+            _rollback_database(database, journal_uid, journal)
+            _write_journal(task, journal, 'rolled-back')
+            shutil.rmtree(task, ignore_errors=True)
+            continue
+        if report is None:
+            if _no_link(staged) or not staged.is_dir():
+                _rollback_database(database, journal_uid, journal)
+                _write_journal(task, journal, 'rolled-back')
+                shutil.rmtree(task, ignore_errors=True)
+                continue
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if _no_link(destination.parent):
+                raise ValueError('Unsafe profile accounts directory.')
+            os.rename(staged, destination)
+            report = _published_import_report(destination, journal_uid)
+            if report is None:
+                raise ValueError('Published import directory failed journal verification.')
+        _write_journal(task, journal, 'complete')
+        shutil.rmtree(task, ignore_errors=True)
+        if recovered_report is None:
+            recovered_report = report
+    return recovered_report
+
+
 def import_capture(path, profile, expected_uid, replace=False, allow_incomplete=False, *,
                    _task_dir=None, _source_sha256=None):
     """Import one capture. ``replace`` is retained for CLI compatibility but cannot overwrite."""
@@ -1020,6 +1412,8 @@ def import_capture(path, profile, expected_uid, replace=False, allow_incomplete=
     expected_uid = uint32(expected_uid, allow_zero=True, label='Expected UID')
     database = _profile_database(profile)
     task = Path(_task_dir) if _task_dir is not None else _new_task(profile)
+    keep_task = False
+    database_committed = False
     try:
         copied, copied_hash = snapshot_archive(path, task)
         with open_secure_zip(copied) as archive:
@@ -1036,8 +1430,15 @@ def import_capture(path, profile, expected_uid, replace=False, allow_incomplete=
                 '这个包的解码不完整（capture is incomplete or undecoded）；默认拒绝导入。'
                 '请重新采集缺失数据后再导入。'
             )
+        recovered = recover_import(profile, database, uid)
+        if recovered is not None:
+            if recovered.get('sha256') != (_source_sha256 or copied_hash):
+                raise ValueError('UID already has progress; existing saves are never overwritten.')
+            return recovered
         _preflight(profile, database, uid)
-        saved = build_player(main=player, entries=entries, report=quality)
+        configs = load_authoritative_configs(profile)
+        saved = build_player(main=player, entries=entries, report=quality, configs=configs,
+                             canonicalize_tags=allow_incomplete)
         reject_secrets(saved)
         payload = gzip.compress(json.dumps(
             saved, ensure_ascii=False, separators=(',', ':'), allow_nan=False,
@@ -1046,7 +1447,6 @@ def import_capture(path, profile, expected_uid, replace=False, allow_incomplete=
         created = _iso_timestamp(player.get('create_time'))
         basic = _basic_values(player, uid, created, now)
         reject_secrets(basic)
-        garden = build_garden(player, entries)
         backup = profile / 'backups' / f'before-import-{dt.datetime.now():%Y%m%d-%H%M%S-%f}.db'
         backup.parent.mkdir(parents=True, exist_ok=True)
         if _no_link(backup.parent):
@@ -1073,19 +1473,40 @@ def import_capture(path, profile, expected_uid, replace=False, allow_incomplete=
         }
         if quality['skippedEntries']:
             result['skippedEntries'] = quality['skippedEntries']
-        if garden is not None:
-            result['garden'] = {'sceneId': 9999, 'furniture': len(garden['furniture']),
-                                'placedCharacters': len(garden['placed'])}
         _write_staged_json(staged / 'import-report.json', result)
-        _write_database(database, uid, created, now, payload, basic, garden)
+        journal = {
+            'schema': 'capture-import-journal/v1',
+            'uid': uid,
+            'state': 'staged',
+            'payloadSha256': hashlib.sha256(payload).hexdigest(),
+            'sourceSha256': _source_sha256 or copied_hash,
+            'createdUserMapping': None,
+        }
+        _write_journal(task, journal, 'staged')
+
+        def committed(created_mapping):
+            nonlocal database_committed, journal
+            database_committed = True
+            journal = dict(journal, createdUserMapping=created_mapping)
+            journal = _write_journal(task, journal, 'db-committed')
+
+        _write_database(database, uid, created, now, payload, basic, player, entries, on_commit=committed)
         destination = profile / 'accounts' / str(uid)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        # Both paths are on the profile volume.  Rename publishes the complete
+        # Both paths are on the profile volume. Rename publishes the complete
         # report directory and fails rather than replacing an existing one.
         os.rename(staged, destination)
+        _write_journal(task, journal, 'complete')
         return result
+    except Exception:
+        if database_committed:
+            # Keep staging plus the journal so a retry/recovery can finish or
+            # compensate the committed database row without a UID conflict.
+            keep_task = True
+        raise
     finally:
-        shutil.rmtree(task, ignore_errors=True)
+        if not keep_task:
+            shutil.rmtree(task, ignore_errors=True)
 
 
 def _public_error(error: Exception) -> dict:
@@ -1094,7 +1515,7 @@ def _public_error(error: Exception) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['inspect', 'import', 'uid', 'accounts'])
+    parser.add_argument('action', choices=['inspect', 'import', 'recover', 'uid', 'accounts'])
     parser.add_argument('--file', type=Path)
     parser.add_argument('--profile', type=Path)
     parser.add_argument('--uid', type=int, default=0)
@@ -1106,6 +1527,8 @@ def main():
             result = inspect(args.file)
         elif args.action == 'import':
             result = import_capture(args.file, args.profile, args.uid, args.replace, args.allow_incomplete)
+        elif args.action == 'recover':
+            result = recover_import(args.profile)
         elif args.action == 'uid':
             result = {'uid': args.uid, 'sdkUid': ensure_uid(args.profile / 'db/lolo.db', args.uid)}
         else:
