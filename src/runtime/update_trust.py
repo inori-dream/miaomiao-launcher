@@ -81,14 +81,16 @@ def verify_manifest(raw, sig):
     if not isinstance(obj, dict) or type(obj.get('schemaVersion')) is not int or obj['schemaVersion'] != 1 or obj.get('repository') != REPOSITORY or obj.get('channel') != 'stable':
         raise TrustError('unsupported manifest')
     version_tuple(obj.get('version'))
-    if obj.get('releaseTag') != 'v'+obj['version'] or type(obj.get('minUpdaterVersion')) is not int or not 1 <= obj['minUpdaterVersion'] <= 1:
+    min_ver = obj.get('minUpdaterVersion')
+    if obj.get('releaseTag') != 'v'+obj['version'] or type(min_ver) is not int or not 1 <= min_ver <= 2:
         raise TrustError('unsupported updater/release version')
     assets = obj.get('assets')
-    if not isinstance(assets, dict) or set(assets) != {'CN','EN'}:
-        raise TrustError('both edition assets required')
+    expected_keys = {'UNIFIED'} if min_ver == 2 else {'CN', 'EN'}
+    if not isinstance(assets, dict) or set(assets) != expected_keys:
+        raise TrustError('missing expected release assets')
     for edition, record in assets.items():
         _record(record, MAX_PAYLOAD)
-        name = 'OverFieldLauncher-'+edition+'-update.zip'
+        name = 'OverFieldLauncher-update.zip' if edition == 'UNIFIED' else 'OverFieldLauncher-'+edition+'-update.zip'
         if record.get('name') != name or record.get('url') != asset_url(obj['releaseTag'], name):
             raise TrustError('wrong asset origin or edition')
         files = record.get('files')

@@ -1,5 +1,4 @@
 param(
-    [ValidateSet('Both','CN','EN')][string]$Edition='Both',
     [string]$OutputDirectory='',
     [string]$IntermediateDirectory='',
     [string]$SourceDirectory=''
@@ -205,8 +204,7 @@ foreach ($name in ($taskSources + $taskAssets)) {
 }
 [IO.File]::WriteAllText((Join-Path $taskIntermediate 'launcher-inputs.json'), ($inputs | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
 try {
-    if ($Edition -in @('Both','CN')) { Build-Edition 'national (zh-CN)' @() (Join-Path $taskOutput 'OverFieldLauncher.exe') }
-    if ($Edition -in @('Both','EN')) { Build-Edition 'international (en)' @('ENGLISH') (Join-Path $taskOutput 'OverFieldLauncher-EN.exe') }
+    Build-Edition 'unified (zh-CN/zh-TW/en/ja/ko)' @() (Join-Path $taskOutput 'OverFieldLauncher.exe')
 } finally {
     if (-not $taskKeepIntermediate -and (Test-Path -LiteralPath $taskIntermediate)) { Remove-Item -LiteralPath $taskIntermediate -Recurse -Force }
 }

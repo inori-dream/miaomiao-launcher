@@ -1,4 +1,4 @@
-﻿"""Regression checks for independently packaged CN and Steam editions."""
+﻿"""Regression checks for isolated local save profiles in the unified launcher."""
 from build.project_layout import source_file
 from contextlib import closing
 import json

@@ -1,23 +1,13 @@
 {
   "schemaVersion": 1,
-  "version": "1.5.1",
-  "artifacts": {
-    "CN": {
-      "file": "OverFieldLauncher.exe",
-      "define": null,
-      "assemblyTitle": "开放空间私服启动器",
-      "launcherLanguage": "zh-CN",
-      "defaultMode": "solo",
-      "settingsFile": "launcher.settings.json"
-    },
-    "EN": {
-      "file": "OverFieldLauncher-EN.exe",
-      "define": "ENGLISH",
-      "assemblyTitle": "OverField International Launcher",
-      "launcherLanguage": "en",
-      "defaultMode": "steam",
-      "settingsFile": "launcher.settings-en.json"
-    }
+  "version": "1.6.0",
+  "artifact": {
+    "file": "OverFieldLauncher.exe",
+    "assemblyTitle": "开放空间私服启动器",
+    "defaultLanguage": "auto",
+    "supportedLocales": ["zh-CN", "zh-TW", "en", "ja", "ko"],
+    "defaultMode": "solo",
+    "settingsFile": "launcher.settings.json"
   },
   "sdk": {
     "file": "LocalUidSDK.dll",

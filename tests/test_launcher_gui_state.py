@@ -61,10 +61,12 @@ class GuiStateContract {
   return value;
  }
  static void Main(string[] args){
-  bool english=args[1]=="EN";
+  bool english=args[1]=="en";
   var assembly=Assembly.LoadFrom(args[0]);
+  var loc=assembly.GetType("OverFieldLocal.Loc",true);
+  loc.GetMethod("SetLocale",BindingFlags.Public|BindingFlags.Static).Invoke(null,new object[]{args[1]});
   if(english){
-   var loc=assembly.GetType("OverFieldLocal.Loc",true);var translate=loc.GetMethod("S",BindingFlags.Public|BindingFlags.Static);
+   var translate=loc.GetMethod("S",BindingFlags.Public|BindingFlags.Static);
    string translated=(string)translate.Invoke(null,new object[]{"抓包启动失败（7）：synthetic"});
    Need(translated.StartsWith("Capture failed to start (7") && translated.Contains("synthetic"),"English capture error fallback missing: "+translated);
    string shortLabel=(string)translate.Invoke(null,new object[]{"失败后不截断"});
@@ -168,23 +170,20 @@ class LauncherGuiStateTests(unittest.TestCase):
         harness.write_text(HARNESS, encoding='utf-8-sig')
         cls.harness = cls.root / 'GuiStateContract.exe'
         csc = Path(os.environ.get('WINDIR', r'C:\Windows')) / 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
-        cls.assemblies = {}
-        for edition, defines in (('CN', []), ('EN', ['/define:ENGLISH'])):
-            output = cls.root / f'LauncherState{edition}.exe'
-            # Keep this list in step with build_launcher.ps1: a launcher built from a
-            # subset fails to compile as soon as Launcher.cs references a sibling
-            # source, which silently reduced this suite to zero executed tests.
-            command = [str(csc), '/nologo', '/target:winexe', '/codepage:65001', '/warnaserror+',
-                       '/reference:System.Windows.Forms.dll', '/reference:System.Drawing.dll',
-                       '/reference:System.Web.Extensions.dll', *defines, f'/out:{output}',
-                       str(source_file(ROOT, 'Launcher.cs')), str(source_file(ROOT, 'Friendly.cs')),
-                       str(source_file(ROOT, 'SeasideUI.cs')), str(source_file(ROOT, 'RoomManagerForm.cs')),
-                       str(source_file(ROOT, 'Strings.cs')), str(source_file(ROOT, 'UpdaterUI.cs'))]
-            result = subprocess.run(command, capture_output=True, timeout=30)
-            if result.returncode:
-                raise RuntimeError(result.stdout.decode('utf-8', errors='replace') +
-                                   result.stderr.decode('utf-8', errors='replace'))
-            cls.assemblies[edition] = output
+        cls.assembly = cls.root / 'LauncherState.exe'
+        # Keep this list in step with build_launcher.ps1: a launcher built from a
+        # subset fails to compile as soon as Launcher.cs references a sibling
+        # source, which silently reduced this suite to zero executed tests.
+        command = [str(csc), '/nologo', '/target:winexe', '/codepage:65001', '/warnaserror+',
+                   '/reference:System.Windows.Forms.dll', '/reference:System.Drawing.dll',
+                   '/reference:System.Web.Extensions.dll', f'/out:{cls.assembly}',
+                   str(source_file(ROOT, 'Launcher.cs')), str(source_file(ROOT, 'Friendly.cs')),
+                   str(source_file(ROOT, 'SeasideUI.cs')), str(source_file(ROOT, 'RoomManagerForm.cs')),
+                   str(source_file(ROOT, 'Strings.cs')), str(source_file(ROOT, 'UpdaterUI.cs'))]
+        result = subprocess.run(command, capture_output=True, timeout=30)
+        if result.returncode:
+            raise RuntimeError(result.stdout.decode('utf-8', errors='replace') +
+                               result.stderr.decode('utf-8', errors='replace'))
         result = subprocess.run([str(csc), '/nologo', '/target:exe', '/codepage:65001',
                                  '/reference:System.Windows.Forms.dll', '/reference:System.Drawing.dll',
                                  f'/out:{cls.harness}', str(harness)], capture_output=True, timeout=30)
@@ -197,9 +196,9 @@ class LauncherGuiStateTests(unittest.TestCase):
         if hasattr(cls, 'temp'):
             cls.temp.cleanup()
 
-    def check(self, edition):
-        result = subprocess.run([str(self.harness), str(self.assemblies[edition]), edition,
-                                 str(self.root / edition)], capture_output=True, timeout=20)
+    def check(self, locale):
+        result = subprocess.run([str(self.harness), str(self.assembly), locale,
+                                 str(self.root / locale)], capture_output=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr.decode('utf-8', errors='replace'))
         self.assertIn(b'PASS', result.stdout)
 
@@ -210,10 +209,10 @@ class LauncherGuiStateTests(unittest.TestCase):
         self.assertIn('AccessibleDescription = Loc.S("单机模式")', source)
 
     def test_chinese_state_results_and_accessibility(self):
-        self.check('CN')
+        self.check('zh-CN')
 
     def test_english_state_results_and_accessibility(self):
-        self.check('EN')
+        self.check('en')
 
     def test_close_and_long_operations_are_bounded_off_ui_thread(self):
         source = (source_file(ROOT, 'Launcher.cs')).read_text(encoding='utf-8-sig')

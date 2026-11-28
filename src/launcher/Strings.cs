@@ -1,40 +1,50 @@
-// Multi-language localization table supporting 5 runtime locales:
+// Unified multi-language localization table supporting 5 UI locales across 4 languages:
 // zh-CN (Simplified Chinese), zh-TW (Traditional Chinese), en (English),
-// ja (Japanese), and ko (Korean). Keeps static defaults compatible with
-// CN (zh-CN) and EN (#if ENGLISH -> en) builds while allowing live switching.
+// ja (Japanese), and ko (Korean) in a single launcher binary.
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Text.RegularExpressions;
 
 namespace OverFieldLocal
 {
     static class Loc
     {
-        public static readonly bool DefaultEnglish =
-#if ENGLISH
-            true;
-#else
-            false;
-#endif
-        // Not readonly/const: tests inspect this field via reflection at startup,
-        // and runtime language switching updates it when switching to/from English.
+        public static string SystemDefaultLocale()
+        {
+            try
+            {
+                CultureInfo ui = CultureInfo.CurrentUICulture;
+                string name = (ui != null ? ui.Name : "").Trim().Replace('_', '-').ToLowerInvariant();
+                if (name == "zh-tw" || name == "zh-hk" || name == "zh-mo" || name.StartsWith("zh-hant")) return "zh-TW";
+                if (name.StartsWith("zh")) return "zh-CN";
+                if (name.StartsWith("ja")) return "ja";
+                if (name.StartsWith("ko")) return "ko";
+            }
+            catch { }
+            return "en";
+        }
+
+        public static readonly string InitialLocale = SystemDefaultLocale();
+        public static readonly bool DefaultEnglish = InitialLocale == "en";
+        // Updated dynamically by SetLocale when switching UI language at runtime.
         public static bool English = DefaultEnglish;
 
-        public static string CurrentLocale = DefaultEnglish ? "en" : "zh-CN";
+        public static string CurrentLocale = InitialLocale;
 
         public static readonly string[] SupportedLocales = { "zh-CN", "zh-TW", "en", "ja", "ko" };
         public static readonly string[] LocaleDisplayNames = { "简体中文", "繁體中文", "English", "日本語", "한국어" };
 
         public static string NormalizeLocale(string value)
         {
-            if (String.IsNullOrWhiteSpace(value)) return DefaultEnglish ? "en" : "zh-CN";
+            if (String.IsNullOrWhiteSpace(value)) return InitialLocale;
             string v = value.Trim().Replace('_', '-').ToLowerInvariant();
             if (v == "zh-tw" || v == "zh-hk" || v == "zh-hant" || v == "tw" || v == "tc") return "zh-TW";
             if (v.StartsWith("zh") || v == "cn" || v == "sc") return "zh-CN";
             if (v.StartsWith("en")) return "en";
             if (v.StartsWith("ja") || v == "jp") return "ja";
             if (v.StartsWith("ko") || v == "kr") return "ko";
-            return DefaultEnglish ? "en" : "zh-CN";
+            return InitialLocale;
         }
 
         public static int LocaleIndex(string locale)
@@ -67,7 +77,7 @@ namespace OverFieldLocal
 
         public static string LocaleFromCountryCode(string countryCode)
         {
-            string fallback = DefaultEnglish ? "en" : "zh-CN";
+            string fallback = InitialLocale;
             string code = ParseGeoCountryCode(countryCode);
             if (String.IsNullOrEmpty(code) || code == "XX" || code == "T1") return fallback;
             if (code == "CN") return "zh-CN";

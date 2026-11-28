@@ -274,8 +274,8 @@ def check_update(root, edition, current_version, force=False, transport=None, st
     temp = None
     state = None
     try:
-        if edition not in ('CN','EN'):
-            raise TrustError('edition must be CN or EN')
+        if edition not in ('UNIFIED','CN','EN'):
+            raise TrustError('edition must be UNIFIED, CN or EN')
         current = version_tuple(current_version)
         root = _guard(root)
         updates = root/'runtime'/'updates'
@@ -395,7 +395,7 @@ def main(argv=None):
     sub = parser.add_subparsers(dest='command', required=True)
     check = sub.add_parser('check')
     check.add_argument('--root', required=True)
-    check.add_argument('--edition', choices=('CN','EN'), required=True)
+    check.add_argument('--edition', choices=('UNIFIED','CN','EN'), required=True)
     check.add_argument('--current-version', required=True)
     check.add_argument('--force', action='store_true')
     check.add_argument('--events', action='store_true')

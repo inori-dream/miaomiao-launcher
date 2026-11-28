@@ -1,6 +1,6 @@
 # Windows 1.0.12 增强集成 / Collector integration
 
-启动器 v1.3.0 提供中文国服和英文 Steam 国际服两版。采集组件标记为 `1.0.12-launcher-integration`：择优融合新手体验和探索报告，保留现有采集底层，而不是直接覆盖原工具。
+统一启动器内置中文（简体/繁体）、English、日本語、한국어四语界面，并支持 B站 / TapTap / Steam 全区服公服采集与私服导入。采集组件标记为 `1.0.12-launcher-integration`：择优融合新手体验和探索报告，保留现有采集底层，而不是直接覆盖原工具。
 
 ## 新手流程
 

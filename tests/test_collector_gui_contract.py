@@ -17,13 +17,16 @@ class GuiContract {
  static void Need(bool value,string message){if(!value)throw new Exception(message);}
  static void Main(string[] args){
   var assembly=Assembly.LoadFrom(args[0]);
+  var loc=assembly.GetType("OverFieldLocal.Loc",true);
+  var setLocale=loc.GetMethod("SetLocale",BindingFlags.Public|BindingFlags.Static);
+  setLocale.Invoke(null,new object[]{args[2]});
   var form=assembly.GetType("OverFieldLocal.LauncherForm",true);
   var instance=FormatterServices.GetUninitializedObject(form);
   var row=new Dictionary<string,object>{{"id","counter"},{"state","unknown"},{"message","统计暂不可用，不代表零"},{"messageEn","Statistics unavailable, not zero"}};
   var report=new Dictionary<string,object>{{"ok",false},{"needsElevation",false},{"checks",new object[]{row}}};
   var method=form.GetMethod("PreflightText",BindingFlags.Instance|BindingFlags.NonPublic);
   string rendered=(string)method.Invoke(instance,new object[]{report,true});
-  Need(rendered.Contains(args[2]),"Wrong preflight language or unknown state");
+  Need(rendered.Contains(args[3]),"Wrong preflight language or unknown state: "+rendered);
   var backend=assembly.GetType("OverFieldLocal.Backend",true);
   var active=FormatterServices.GetUninitializedObject(backend);
   string root=Path.GetFullPath(args[1]);Directory.CreateDirectory(root);
@@ -72,11 +75,11 @@ class CollectorGuiContractTests(unittest.TestCase):
         if result.returncode:raise RuntimeError(result.stdout.decode('utf-8',errors='replace'))
     @classmethod
     def tearDownClass(cls):cls.temp.cleanup()
-    def check(self,name,expected):
-        result=subprocess.run([str(self.exe),str(source_file(ROOT, name)),str(self.root/name),expected],capture_output=True,timeout=20)
+    def check(self,locale,expected):
+        result=subprocess.run([str(self.exe),str(source_file(ROOT, 'OverFieldLauncher.exe')),str(self.root/locale),locale,expected],capture_output=True,timeout=20)
         self.assertEqual(result.returncode,0,result.stderr.decode('utf-8',errors='replace'))
         self.assertIn(b'PASS',result.stdout)
-    def test_chinese_preflight_and_close_signal(self):self.check('OverFieldLauncher.exe','统计暂不可用')
-    def test_english_preflight_and_close_signal(self):self.check('OverFieldLauncher-EN.exe','Statistics unavailable')
+    def test_chinese_preflight_and_close_signal(self):self.check('zh-CN','统计暂不可用')
+    def test_english_preflight_and_close_signal(self):self.check('en','Statistics unavailable')
 
 if __name__=='__main__':unittest.main()

@@ -21,8 +21,10 @@ class GuiCaptureContract {
    {"status","未见装备列表"},{"count",1},{"hint","打开武器、装备界面"}};
  }
  static void Main(string[] args){
-  bool english=args[1]=="EN";
+  bool english=args[1]=="en";
   var assembly=Assembly.LoadFrom(args[0]);
+  var loc=assembly.GetType("OverFieldLocal.Loc",true);
+  loc.GetMethod("SetLocale",BindingFlags.Public|BindingFlags.Static).Invoke(null,new object[]{args[1]});
   var form=assembly.GetType("OverFieldLocal.LauncherForm",true);
   var warningMethod=form.GetMethod("CaptureIncompleteWarning",BindingFlags.Static|BindingFlags.NonPublic);
   string expected=english
@@ -65,22 +67,19 @@ class CaptureGuiCompletenessTests(unittest.TestCase):
         harness.write_text(HARNESS, encoding='utf-8-sig')
         cls.harness = cls.root / 'GuiCaptureContract.exe'
         csc = Path(os.environ.get('WINDIR', r'C:\Windows')) / 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
-        cls.assemblies = {}
-        for edition, defines in (('CN', []), ('EN', ['/define:ENGLISH'])):
-            output = cls.root / f'LauncherCapture{edition}.exe'
-            # Same source set as build_launcher.ps1; a narrower list fails to
-            # compile as soon as Launcher.cs references a sibling source.
-            command = [str(csc), '/nologo', '/target:winexe', '/codepage:65001',
-                       '/reference:System.Windows.Forms.dll', '/reference:System.Drawing.dll',
-                       '/reference:System.Web.Extensions.dll', *defines, f'/out:{output}',
-                       str(source_file(ROOT, 'Launcher.cs')), str(source_file(ROOT, 'Friendly.cs')),
-                       str(source_file(ROOT, 'SeasideUI.cs')), str(source_file(ROOT, 'RoomManagerForm.cs')),
-                       str(source_file(ROOT, 'Strings.cs')), str(source_file(ROOT, 'UpdaterUI.cs'))]
-            result = subprocess.run(command, capture_output=True, timeout=30)
-            if result.returncode:
-                raise RuntimeError(result.stdout.decode('utf-8', errors='replace') +
-                                   result.stderr.decode('utf-8', errors='replace'))
-            cls.assemblies[edition] = output
+        cls.assembly = cls.root / 'LauncherCapture.exe'
+        # Same source set as build_launcher.ps1; a narrower list fails to
+        # compile as soon as Launcher.cs references a sibling source.
+        command = [str(csc), '/nologo', '/target:winexe', '/codepage:65001',
+                   '/reference:System.Windows.Forms.dll', '/reference:System.Drawing.dll',
+                   '/reference:System.Web.Extensions.dll', f'/out:{cls.assembly}',
+                   str(source_file(ROOT, 'Launcher.cs')), str(source_file(ROOT, 'Friendly.cs')),
+                   str(source_file(ROOT, 'SeasideUI.cs')), str(source_file(ROOT, 'RoomManagerForm.cs')),
+                   str(source_file(ROOT, 'Strings.cs')), str(source_file(ROOT, 'UpdaterUI.cs'))]
+        result = subprocess.run(command, capture_output=True, timeout=30)
+        if result.returncode:
+            raise RuntimeError(result.stdout.decode('utf-8', errors='replace') +
+                               result.stderr.decode('utf-8', errors='replace'))
         result = subprocess.run([str(csc), '/nologo', '/target:exe', '/codepage:65001',
                                  '/reference:System.Windows.Forms.dll', '/reference:System.Drawing.dll',
                                  f'/out:{cls.harness}', str(harness)], capture_output=True, timeout=30)
@@ -93,17 +92,17 @@ class CaptureGuiCompletenessTests(unittest.TestCase):
         if hasattr(cls, 'temp'):
             cls.temp.cleanup()
 
-    def check(self, edition):
-        result = subprocess.run([str(self.harness), str(self.assemblies[edition]), edition],
+    def check(self, locale):
+        result = subprocess.run([str(self.harness), str(self.assembly), locale],
                                 capture_output=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr.decode('utf-8', errors='replace'))
         self.assertIn(b'PASS', result.stdout)
 
     def test_chinese_gap_warning_and_partial_equipment_row(self):
-        self.check('CN')
+        self.check('zh-CN')
 
     def test_english_gap_warning_and_partial_equipment_row(self):
-        self.check('EN')
+        self.check('en')
 
 
 if __name__ == '__main__':

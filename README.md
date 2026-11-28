@@ -1,30 +1,27 @@
-# 开放空间私服启动器
+# 开放空间私服启动器（OverField Local Launcher）
 
-Windows 单机 / 局域网服务端管理启动器，支持本地 UID 登录、独立存档、公服账号数据采集与导入（含地图探索与星云树采集保存，受当前默认服务端限制暂不支持导入）、房间和玩家管理。界面为原创天空蓝／海洋青动漫海边插画，不嵌入游戏截图或玩家数据。
+Windows 单机 / 局域网服务端管理启动器，**单一统一客户端支持 4 种语言（中文[简体/繁体]、English、日本語、한국어）与全区服（B站 / TapTap / Steam）**，自动按网络区域及系统语言初始化并支持界面实时切换；内置本地 UID 登录、独立存档、公服账号数据采集与多版本一键导入（含地图探索与星云树采集保存，受当前默认服务端限制暂不支持导入）、房间和玩家管理。界面为原创天空蓝／海洋青动漫海边插画，不嵌入游戏截图或玩家数据。
 
-当前版本 **v1.5.1**（2026-11-28）。历史变更见 [更新记录](docs/RELEASE-NOTES.md)。
+当前版本 **v1.6.0**（2026-11-28）。历史变更见 [更新记录](docs/RELEASE-NOTES.md)。
 
 ## 下载
 
-所有版本都在 [Releases](https://github.com/inori-dream/miaomiao-launcher/releases/latest) 页面。**请下载 `.zip` 附件，不要用 Code → Download ZIP**——那个下的是源码，不能直接运行。
+所有版本都在 [Releases](https://github.com/inori-dream/miaomiao-launcher/releases/latest) 页面。**请下载附件包，不要用 Code → Download ZIP**——那个下的是源码，不能直接运行。
 
 | 下载项 | 用途 |
 | --- | --- |
-| [OverFieldLauncher-CN-portable.zip](https://github.com/inori-dream/miaomiao-launcher/releases/latest/download/OverFieldLauncher-CN-portable.zip) | 中文国服启动器，约 154 MB |
-| [OverFieldLauncher-EN-portable.zip](https://github.com/inori-dream/miaomiao-launcher/releases/latest/download/OverFieldLauncher-EN-portable.zip) | 英文 Steam 国际服启动器，约 154 MB |
-| [OverField-Android-Backup-v3.1-third-party.apk](https://github.com/inori-dream/miaomiao-launcher/releases/latest/download/OverField-Android-Backup-v3.1-third-party.apk) | 安卓手机采集工具，约 3.9 MB |
+| [OverFieldLauncher-portable.zip](https://github.com/inori-dream/miaomiao-launcher/releases/latest/download/OverFieldLauncher-portable.zip) | Windows 统一便携版启动器（支持 简体中文 / 繁體中文 / English / 日本語 / 한국어 四语种，兼容 B站 / TapTap / Steam 客户端），约 155 MB |
+| [OverField-Android-Backup-v3.1-third-party.apk](https://github.com/inori-dream/miaomiao-launcher/releases/latest/download/OverField-Android-Backup-v3.1-third-party.apk) | 安卓手机采集工具（第三方原包），约 3.9 MB |
 
-两个 Windows 包**各自独立**，请分别解压到不同目录，不要互相覆盖。
+PC 采集工具（账号备份／抓包解码／多版本一键导入）已经包含在 Windows 便携包的 `backup-tool/` 目录里，不需要另外下载。
 
-PC 采集工具（账号备份／抓包解码）已经包含在 Windows 便携包的 `backup-tool/` 目录里，不需要另外下载。
-
-发布页里还会看到 `launcher-update.json`、`launcher-update.sig` 和两个 `*-update.zip`。这些是启动器**自动更新用的**，不用手动下载。
+发布页里还会看到 `launcher-update.json`、`launcher-update.sig` 与 `OverFieldLauncher-update.zip`。这些是启动器**自动更新用的**，不用手动下载。
 
 ## 如何使用
 
 ### 第一步：解压
 
-右键「全部解压」到任意可写目录（例如 `D:\OverField-CN`）。**不要在压缩包里直接双击运行**，也不要解压到 `C:\Program Files` 这类需要管理员权限的位置。
+右键「全部解压」到任意可写目录（例如 `D:\OverFieldLauncher`）。**不要在压缩包里直接双击运行**，也不要解压到 `C:\Program Files` 这类需要管理员权限的位置。
 
 包内已自带 Python 运行时、服务端程序和服务资源，不需要另行安装 Python。
 
@@ -32,7 +29,7 @@ PC 采集工具（账号备份／抓包解码）已经包含在 Windows 便携�
 
 双击 `OverFieldLauncher.exe`。
 
-首次启动会让选择游戏目录——点「更改目录」，选中你自己电脑上的游戏客户端安装目录。**游戏本体不随包分发，也不自动下载**，需要你自己从合法来源准备好。
+首次启动将自动识别网络区域与系统语言并设置界面语言，也可随时在左侧「语言 / Language」下拉框切换简体中文、繁體中文、English、日本語、한국어。点「更改目录」或「查找 Steam / 自动查找」选中你电脑上的 B站 / TapTap / Steam 游戏客户端目录。**游戏本体不随包分发，也不自动下载**，需要你自己从合法来源准备好。
 
 ### 第三步：本地 UID 登录（日常单机玩法）
 
@@ -62,11 +59,11 @@ Windows 防火墙规则只放行同一局域网。**本项目是本地 UID 模�
 
 ### 自动更新
 
-启动器启动时会在后台检查对应版本的正式版更新，自动下载并验签小型核心更新包；当游戏、服务和采集都空闲时倒计时安全切换并重启。
+启动器启动时会在后台检查正式版更新，自动下载并验签小型核心更新包；当游戏、服务和采集都空闲时倒计时安全切换并重启。
 
 存档、配置、运行数据、游戏本体和安卓 APK 不在自动更新范围内。本地受管文件如果有改动，会暂停更新而不是覆盖。详见 [自动更新说明](docs/auto-update.md)。
 
-> 旧版本首次需要先手动升级到 v1.4.0（第一个带更新模块的版本），之后才能由启动器自动获取更新；从 v1.4.x 扁平目录升级到 v1.5.0（`app/` 新目录结构）时同样需重新下载 v1.5.0 便携包覆盖/解压一次（保留原 `profiles/`、`runtime/` 与 `launcher.settings*.json` 即可保留全部存档与配置），后续版本将继续正常自动更新。
+> 自 `v1.6.0` 起已合并为单一统一多语言启动器，不再区分 CN/EN 两个版本；旧版 `v1.4.x` / `v1.5.x` 覆盖升级时，下载 `OverFieldLauncher-portable.zip` 解压替换即可（保留原 `profiles/`、`runtime/` 与 `launcher.settings*.json` 即可自动继承原有存档和设置），`v1.6.0` 起继续通过单一更新包自动更新。
 
 ## 主要事项
 

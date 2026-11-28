@@ -25,7 +25,7 @@ import privacy_check
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = source_file(ROOT, 'release-build.json')
 CONFIG = json.loads(CONFIG_PATH.read_text(encoding='utf-8'))
-ARTIFACT_NAMES = [item['file'] for item in CONFIG['artifacts'].values()] + [CONFIG['sdk']['file']]
+ARTIFACT_NAMES = [CONFIG['artifact']['file'], CONFIG['sdk']['file']]
 
 
 def sha256(path):
@@ -139,15 +139,23 @@ $type = $assembly.GetType('OverFieldLocal.Loc')
 $backendType = $assembly.GetType('OverFieldLocal.Backend')
 $backend = [Activator]::CreateInstance($backendType)
 $flags = [Reflection.BindingFlags]'Public,NonPublic,Instance,Static'
-$english = [bool]$type.GetField('English', $flags).GetValue($null)
 function AttributeValue($type) {
     $attribute = $type.GetCustomAttributes($false) | Where-Object { $_.GetType().Name -eq 'AssemblyFileVersionAttribute' } | Select-Object -First 1
     return $attribute.Version
 }
+$supported = @($type.GetField('SupportedLocales', $flags).GetValue($null))
+$type.GetMethod('SetLocale').Invoke($null, @('zh-CN'))
+$titleCn = $type.GetMethod('S').Invoke($null, @('开放空间 · 本地启动器'))
+$startCn = $type.GetMethod('S').Invoke($null, @('启动游戏  →'))
+$type.GetMethod('SetLocale').Invoke($null, @('en'))
+$titleEn = $type.GetMethod('S').Invoke($null, @('开放空间 · 本地启动器'))
+$startEn = $type.GetMethod('S').Invoke($null, @('启动游戏  →'))
 [ordered]@{
-    english = $english
-    title = $type.GetMethod('S').Invoke($null, @('开放空间 · 本地启动器'))
-    start = $type.GetMethod('S').Invoke($null, @('启动游戏  →'))
+    supportedLocales = $supported
+    title = $titleCn
+    start = $startCn
+    titleEn = $titleEn
+    startEn = $startEn
     defaultMode = [string]$backendType.GetField('Mode', $flags).GetValue($backend)
     settingsFile = [string]$backendType.GetProperty('SettingsName').GetValue($null)
     assemblyTitle = $assembly.GetCustomAttributes($false) | Where-Object { $_.GetType().Name -eq 'AssemblyTitleAttribute' } | Select-Object -First 1 -ExpandProperty Title
@@ -251,17 +259,17 @@ def clean_start_test(edition, executable, directory, logs):
         for size in CONFIG['smokeTest']['sizes']:
             result = subprocess.run(
                 [str(edition_dir / Path(executable).name), CONFIG['smokeTest']['argument'], preview,
-                 '--ui-size', size, '--ui-mode', CONFIG['artifacts'][edition]['defaultMode']],
+                 '--ui-size', size, '--ui-mode', CONFIG['artifact']['defaultMode']],
                 cwd=edition_dir, capture_output=True, text=True, encoding='utf-8', errors='replace',
                 timeout=CONFIG['smokeTest']['timeoutSeconds'],
             )
-            stem = f"{CONFIG['artifacts'][edition]['defaultMode']}-{size}"
+            stem = f"{CONFIG['artifact']['defaultMode']}-{size}"
             image = Path(preview) / (stem + '.png')
             audit = Path(preview) / (stem + '.json')
             if result.returncode != 0 or not image.is_file() or not audit.is_file():
                 raise RuntimeError(privacy_check.safe_error(f'UI preview failed: {result.returncode}: {result.stderr or result.stdout}'))
             layout = json.loads(audit.read_text(encoding='utf-8-sig'))
-            if layout['mode'] != CONFIG['artifacts'][edition]['defaultMode'] or layout['layoutErrors']:
+            if layout['mode'] != CONFIG['artifact']['defaultMode'] or layout['layoutErrors']:
                 raise ValueError(f'UI preview audit failed: {layout}')
             png = image.read_bytes()
             if png[:8] != b'\x89PNG\r\n\x1a\n':
@@ -295,7 +303,7 @@ def staged_layout_test(staged_directory, bin_directory):
     loose_files = [name for name, item in entries.items() if not item.is_dir()]
     if loose_files:
         raise ValueError('Staged output root contains loose files: ' + ', '.join(sorted(loose_files)))
-    expected_dirs = {'backup-tool', 'bin', 'cn', 'en'}
+    expected_dirs = {'backup-tool', 'bin', 'launcher'}
     allowed_dirs = expected_dirs | {'reports'}
     unexpected = set(entries) - allowed_dirs
     if unexpected:
@@ -305,67 +313,64 @@ def staged_layout_test(staged_directory, bin_directory):
         raise ValueError('Missing staged output directories: ' + ', '.join(sorted(missing)))
 
     sdk_hash = sha256(binaries / CONFIG['sdk']['file'])
-    checked = {}
-    for folder, edition in (('cn', 'CN'), ('en', 'EN')):
-        edition_dir = staged / folder
-        app_dir = edition_dir / 'app'
-        edition_entries = {item.name for item in edition_dir.iterdir()}
-        expected_edition_entries = {'OverFieldLauncher.exe', 'README.md', 'app', 'backup-tool', 'docs'}
-        if edition_entries != expected_edition_entries:
-            raise ValueError(f'{folder} root entries mismatch: {sorted(edition_entries)}')
-        launcher_path = edition_dir / 'OverFieldLauncher.exe'
-        if sha256(launcher_path) != sha256(binaries / CONFIG['artifacts'][edition]['file']):
-            raise ValueError(f'{folder}/OverFieldLauncher.exe does not match built {edition} binary')
-        if sha256(app_dir / CONFIG['sdk']['file']) != sdk_hash:
-            raise ValueError(f'{folder}/app/{CONFIG["sdk"]["file"]} does not match built SDK')
-        actual = inspect_edition(launcher_path)
-        if actual.get('english') != (edition == 'EN'):
-            raise ValueError(f'{folder} launcher edition mismatch: {actual!r}')
-        privacy = subprocess.run(
-            [sys.executable, '-B', '-X', 'utf8', str(app_dir / 'privacy_check.py')],
-            cwd=edition_dir, capture_output=True, text=True, encoding='utf-8', check=False,
+    launcher_dir = staged / 'launcher'
+    app_dir = launcher_dir / 'app'
+    launcher_entries = {item.name for item in launcher_dir.iterdir()}
+    expected_launcher_entries = {'OverFieldLauncher.exe', 'README.md', 'app', 'backup-tool', 'docs'}
+    if launcher_entries != expected_launcher_entries:
+        raise ValueError(f'launcher root entries mismatch: {sorted(launcher_entries)}')
+    launcher_path = launcher_dir / 'OverFieldLauncher.exe'
+    if sha256(launcher_path) != sha256(binaries / CONFIG['artifact']['file']):
+        raise ValueError('launcher/OverFieldLauncher.exe does not match built binary')
+    if sha256(app_dir / CONFIG['sdk']['file']) != sdk_hash:
+        raise ValueError(f'launcher/app/{CONFIG["sdk"]["file"]} does not match built SDK')
+    actual = inspect_edition(launcher_path)
+    if actual.get('supportedLocales') != CONFIG['artifact']['supportedLocales']:
+        raise ValueError(f'launcher supportedLocales mismatch: {actual!r}')
+    privacy = subprocess.run(
+        [sys.executable, '-B', '-X', 'utf8', str(app_dir / 'privacy_check.py')],
+        cwd=launcher_dir, capture_output=True, text=True, encoding='utf-8', check=False,
+    )
+    if privacy.returncode != 0:
+        raise RuntimeError(privacy_check.safe_error(privacy.stderr or privacy.stdout))
+    importing = subprocess.run(
+        [sys.executable, '-I', '-B', '-X', 'utf8', '-c',
+         'import sys; sys.path.insert(0, sys.argv[1]); import capture_zip', str(app_dir)],
+        capture_output=True, text=True, encoding='utf-8', check=False,
+    )
+    if importing.returncode != 0:
+        raise RuntimeError(privacy_check.safe_error(importing.stderr or importing.stdout))
+    for script_args in (
+        [str(app_dir / 'capture_import.py'), '--help'],
+        [str(app_dir / 'official_import.py'), '--help'],
+        [str(app_dir / 'update_apply.py'), '--help'],
+        [str(app_dir / 'launcher_updater.py'), '--help'],
+        [str(app_dir / 'profile_manager.py'), '--help'],
+        [str(app_dir / 'official_capture.py'), 'status'],
+    ):
+        isolated = subprocess.run(
+            [sys.executable, '-I', '-B', '-X', 'utf8', *script_args],
+            cwd=launcher_dir, capture_output=True, text=True, encoding='utf-8', check=False,
         )
-        if privacy.returncode != 0:
-            raise RuntimeError(privacy_check.safe_error(privacy.stderr or privacy.stdout))
-        importing = subprocess.run(
-            [sys.executable, '-I', '-B', '-X', 'utf8', '-c',
-             'import sys; sys.path.insert(0, sys.argv[1]); import capture_zip', str(app_dir)],
-            capture_output=True, text=True, encoding='utf-8', check=False,
+        if isolated.returncode != 0:
+            raise RuntimeError(f'launcher isolated script failed {script_args}: {isolated.stderr or isolated.stdout}')
+    # Trigger sibling module imports (official_launcher, repair_version) under isolated mode too.
+    for script_args, expected in (
+        ([str(app_dir / 'official_capture.py'), 'validate-launcher', '--launcher', str(launcher_dir / 'missing.exe')], '"error"'),
+        ([str(app_dir / 'profile_manager.py'), 'client', '--root', str(launcher_dir), '--base', str(launcher_dir / 'missing-profiles')], 'FileNotFoundError'),
+    ):
+        isolated = subprocess.run(
+            [sys.executable, '-I', '-B', '-X', 'utf8', *script_args],
+            cwd=launcher_dir, capture_output=True, text=True, encoding='utf-8', check=False,
         )
-        if importing.returncode != 0:
-            raise RuntimeError(privacy_check.safe_error(importing.stderr or importing.stdout))
-        for script_args in (
-            [str(app_dir / 'capture_import.py'), '--help'],
-            [str(app_dir / 'official_import.py'), '--help'],
-            [str(app_dir / 'update_apply.py'), '--help'],
-            [str(app_dir / 'launcher_updater.py'), '--help'],
-            [str(app_dir / 'profile_manager.py'), '--help'],
-            [str(app_dir / 'official_capture.py'), 'status'],
-        ):
-            isolated = subprocess.run(
-                [sys.executable, '-I', '-B', '-X', 'utf8', *script_args],
-                cwd=edition_dir, capture_output=True, text=True, encoding='utf-8', check=False,
-            )
-            if isolated.returncode != 0:
-                raise RuntimeError(f'{folder} isolated script failed {script_args}: {isolated.stderr or isolated.stdout}')
-        # Trigger sibling module imports (official_launcher, repair_version) under isolated mode too.
-        for script_args, expected in (
-            ([str(app_dir / 'official_capture.py'), 'validate-launcher', '--launcher', str(edition_dir / 'missing.exe')], '"error"'),
-            ([str(app_dir / 'profile_manager.py'), 'client', '--root', str(edition_dir), '--base', str(edition_dir / 'missing-profiles')], 'FileNotFoundError'),
-        ):
-            isolated = subprocess.run(
-                [sys.executable, '-I', '-B', '-X', 'utf8', *script_args],
-                cwd=edition_dir, capture_output=True, text=True, encoding='utf-8', check=False,
-            )
-            combined = (isolated.stdout or '') + '\n' + (isolated.stderr or '')
-            if 'ModuleNotFoundError' in combined or expected not in combined:
-                raise RuntimeError(f'{folder} isolated sibling check failed {script_args}: {combined}')
-        checked[folder] = {'launcherSha256': sha256(launcher_path), 'privacyPassed': True, 'importable': True}
+        combined = (isolated.stdout or '') + '\n' + (isolated.stderr or '')
+        if 'ModuleNotFoundError' in combined or expected not in combined:
+            raise RuntimeError(f'launcher isolated sibling check failed {script_args}: {combined}')
+    checked = {'launcher': {'launcherSha256': sha256(launcher_path), 'privacyPassed': True, 'importable': True}}
 
-    if (staged / 'cn/README.md').read_bytes() == (staged / 'en/README.md').read_bytes():
-        raise ValueError('CN and EN staged README.md should reflect their distinct editions')
-    if not (staged / 'en/README.md').read_text(encoding='utf-8').startswith(f"# OverField International Launcher {CONFIG['version']}"):
-        raise ValueError('EN staged README.md version header mismatch')
+    readme_text = (staged / 'launcher/README.md').read_text(encoding='utf-8')
+    if 'OverFieldLauncher-portable.zip' not in readme_text:
+        raise ValueError('Unified launcher README.md should reference OverFieldLauncher-portable.zip')
     standalone_backup = staged / 'backup-tool'
     if not (standalone_backup / 'parse_pcap.py').is_file():
         raise ValueError('Standalone backup-tool is missing parse_pcap.py')
@@ -420,25 +425,31 @@ def verify_build(directory, report_path, logs, rebuild_directory=None, intermedi
 
         artifacts[name] = record(f'artifact-{name}', inspect)
 
-    for edition, expected in CONFIG['artifacts'].items():
-        def check_edition(edition=edition, expected=expected):
-            actual = inspect_edition(directory / expected['file'])
-            wanted = {
-                'english': edition == 'EN', 'title': 'OverField · Local Launcher' if edition == 'EN' else '开放空间 · 本地启动器',
-                'start': 'Start game  →' if edition == 'EN' else '启动游戏  →',
-                'defaultMode': expected['defaultMode'], 'settingsFile': expected['settingsFile'],
-                'assemblyTitle': expected['assemblyTitle'], 'fileVersion': CONFIG['version'] + '.0',
-                'informationalVersion': CONFIG['version'],
-            }
-            for key, value in wanted.items():
-                if actual.get(key) != value:
-                    raise ValueError(f'{edition} {key}: expected {value!r}, got {actual.get(key)!r}')
-            pe = artifacts[expected['file']]
-            if not pe or not pe.get('cli', {}).get('flags', 0) & 1:
-                raise ValueError(f'{edition} is not an IL-only managed executable')
-            return actual
+    expected = CONFIG['artifact']
 
-        record(f'edition-{edition}', check_edition)
+    def check_unified():
+        actual = inspect_edition(directory / expected['file'])
+        wanted = {
+            'title': '开放空间 · 本地启动器',
+            'start': '启动游戏  →',
+            'titleEn': 'OverField · Local Launcher',
+            'startEn': 'Start game  →',
+            'defaultMode': expected['defaultMode'],
+            'settingsFile': expected['settingsFile'],
+            'assemblyTitle': expected['assemblyTitle'],
+            'fileVersion': CONFIG['version'] + '.0',
+            'informationalVersion': CONFIG['version'],
+            'supportedLocales': expected['supportedLocales'],
+        }
+        for key, value in wanted.items():
+            if actual.get(key) != value:
+                raise ValueError(f'unified {key}: expected {value!r}, got {actual.get(key)!r}')
+        pe = artifacts[expected['file']]
+        if not pe or not pe.get('cli', {}).get('flags', 0) & 1:
+            raise ValueError('OverFieldLauncher.exe is not an IL-only managed executable')
+        return actual
+
+    record('unified-launcher', check_unified)
 
     def check_sdk():
         path = directory / CONFIG['sdk']['file']
@@ -455,8 +466,7 @@ def verify_build(directory, report_path, logs, rebuild_directory=None, intermedi
     if staged_directory:
         record('staged-layout', lambda: staged_layout_test(staged_directory, directory))
     with tempfile.TemporaryDirectory(prefix='launcher-clean-start-', dir=logs) as smoke:
-        for edition, expected in CONFIG['artifacts'].items():
-            record(f'clean-start-{edition}', lambda edition=edition, expected=expected: clean_start_test(edition, directory / expected['file'], smoke, logs))
+        record('clean-start-unified', lambda: clean_start_test('unified', directory / expected['file'], smoke, logs))
     if rebuild_directory:
         def compare_rebuild():
             rebuild = Path(rebuild_directory).resolve()
@@ -495,12 +505,12 @@ def verify_build(directory, report_path, logs, rebuild_directory=None, intermedi
 
 
 class BuildScriptTests(unittest.TestCase):
-    def test_release_config_has_distinct_editions(self):
-        cn, en = CONFIG['artifacts']['CN'], CONFIG['artifacts']['EN']
-        self.assertEqual((cn['defaultMode'], en['defaultMode']), ('solo', 'steam'))
-        self.assertNotEqual(cn['settingsFile'], en['settingsFile'])
-        self.assertEqual(en['define'], 'ENGLISH')
-        self.assertNotEqual(cn['file'], en['file'])
+    def test_release_config_defines_single_multi_locale_launcher(self):
+        artifact = CONFIG['artifact']
+        self.assertEqual(artifact['file'], 'OverFieldLauncher.exe')
+        self.assertEqual(artifact['settingsFile'], 'launcher.settings.json')
+        self.assertEqual(artifact['defaultMode'], 'solo')
+        self.assertEqual(artifact['supportedLocales'], ['zh-CN', 'zh-TW', 'en', 'ja', 'ko'])
         self.assertFalse(CONFIG['smokeTest']['startsGame'])
         self.assertFalse(CONFIG['smokeTest']['startsServices'])
 
@@ -561,10 +571,9 @@ class BuildScriptTests(unittest.TestCase):
                 (source / 'docs').mkdir()
                 shutil.copyfile(source_file(ROOT, 'docs/auto-update.md'), source / 'docs/auto-update.md')
                 template_entry = 'app/capture_zip.py' if layout == 'repository-app' else 'capture_zip.py'
-                for edition, binary in CONFIG['artifacts'].items():
-                    (binaries / binary['file']).write_bytes(b'MZ synthetic build fixture')
-                    with zipfile.ZipFile(templates / f'OverFieldLauncher-{edition}-portable.zip', 'w') as archive:
-                        archive.write(runtime / 'capture_zip.py', template_entry)
+                (binaries / CONFIG['artifact']['file']).write_bytes(b'MZ synthetic build fixture')
+                with zipfile.ZipFile(templates / 'OverFieldLauncher-portable.zip', 'w') as archive:
+                    archive.write(runtime / 'capture_zip.py', template_entry)
                 signing_key = root / 'synthetic-key.pem'
                 signing_key.write_text('Synthetic test fixture; not a private key.', encoding='ascii')
 
@@ -574,24 +583,24 @@ class BuildScriptTests(unittest.TestCase):
                 with patch.object(builder.subprocess, 'run', side_effect=fake_sign), \
                         patch('update_trust.verify_manifest', return_value={'version': CONFIG['version']}), \
                         redirect_stdout(io.StringIO()):
-                    builder.build(CONFIG['version'], source, templates, output, 'synthetic-node', signing_key)
+                    manifest = builder.build(CONFIG['version'], source, templates, output, 'synthetic-node', signing_key)
 
-                # All supported layouts must produce valid bundles and keep runtime imports working.
-                for edition in CONFIG['artifacts']:
-                    for kind in ('update', 'portable'):
-                        package = root / f'{edition}-{kind}'
-                        with zipfile.ZipFile(output / f'OverFieldLauncher-{edition}-{kind}.zip') as archive:
-                            self.assertFalse(any(name.startswith(('src/', 'build/')) for name in archive.namelist()))
-                            archive.extractall(package)
-                        import_root = package / 'app' if layout == 'repository-app' else package
-                        self.assertTrue((import_root / 'installation-manifest.json').is_file())
-                        if kind == 'portable':
-                            self.assertTrue((import_root / 'release-build.json').is_file())
-                        result = subprocess.run([
-                            sys.executable, '-I', '-B', '-X', 'utf8', '-c',
-                            'import sys; sys.path.insert(0, sys.argv[1]); import capture_zip', str(import_root)
-                        ], capture_output=True, text=True, encoding='utf-8', check=False)
-                        self.assertEqual(result.returncode, 0, f'{layout}/{edition}-{kind}: {result.stderr}')
+                self.assertEqual(manifest['minUpdaterVersion'], 2)
+                self.assertEqual(set(manifest['assets']), {'UNIFIED'})
+                for kind in ('update', 'portable'):
+                    package = root / f'unified-{kind}'
+                    with zipfile.ZipFile(output / f'OverFieldLauncher-{kind}.zip') as archive:
+                        self.assertFalse(any(name.startswith(('src/', 'build/')) for name in archive.namelist()))
+                        archive.extractall(package)
+                    import_root = package / 'app' if layout == 'repository-app' else package
+                    self.assertTrue((import_root / 'installation-manifest.json').is_file())
+                    if kind == 'portable':
+                        self.assertTrue((import_root / 'release-build.json').is_file())
+                    result = subprocess.run([
+                        sys.executable, '-I', '-B', '-X', 'utf8', '-c',
+                        'import sys; sys.path.insert(0, sys.argv[1]); import capture_zip', str(import_root)
+                    ], capture_output=True, text=True, encoding='utf-8', check=False)
+                    self.assertEqual(result.returncode, 0, f'{layout}/{kind}: {result.stderr}')
 
     def test_update_packages_sync_all_runtime_files_beyond_template(self):
         import io
@@ -618,25 +627,23 @@ class BuildScriptTests(unittest.TestCase):
                 shutil.copyfile(source_file(ROOT, name), dest)
             (source / 'docs').mkdir()
             shutil.copyfile(source_file(ROOT, 'docs/auto-update.md'), source / 'docs/auto-update.md')
-            for edition, binary in CONFIG['artifacts'].items():
-                (binaries / binary['file']).write_bytes(b'MZ synthetic build fixture')
-                with zipfile.ZipFile(templates / f'OverFieldLauncher-{edition}-portable.zip', 'w') as archive:
-                    archive.write(runtime / 'capture_zip.py', 'app/capture_zip.py')
-                    archive.writestr('app/release-build.json', '{"version":"1.5.0"}')
+            (binaries / CONFIG['artifact']['file']).write_bytes(b'MZ synthetic build fixture')
+            with zipfile.ZipFile(templates / 'OverFieldLauncher-CN-portable.zip', 'w') as archive:
+                archive.write(runtime / 'capture_zip.py', 'app/capture_zip.py')
+                archive.writestr('app/release-build.json', '{"version":"1.5.0"}')
             signing_key = root / 'synthetic-key.pem'
             signing_key.write_text('Synthetic test fixture; not a private key.', encoding='ascii')
             with patch.object(builder.subprocess, 'run', side_effect=lambda arguments, **_: Path(arguments[-1]).write_bytes(b'sig')), \
                     patch('update_trust.verify_manifest', return_value={'version': CONFIG['version']}), \
                     redirect_stdout(io.StringIO()):
                 manifest = builder.build(CONFIG['version'], source, templates, output, 'synthetic-node', signing_key)
-            for edition in CONFIG['artifacts']:
-                with zipfile.ZipFile(output / f'OverFieldLauncher-{edition}-update.zip') as update_zip:
-                    names = set(update_zip.namelist())
-                    self.assertIn('app/one_click_import.py', names)
-                    self.assertIn('backup-tool/5_one_click_import.cmd', names)
-                    self.assertIn('backup-tool/normalize_capture.py', names)
-                    self.assertNotIn('app/release-build.json', names)
-                    self.assertEqual(set(manifest['assets'][edition]['files']), names)
+            with zipfile.ZipFile(output / 'OverFieldLauncher-update.zip') as update_zip:
+                names = set(update_zip.namelist())
+                self.assertIn('app/one_click_import.py', names)
+                self.assertIn('backup-tool/5_one_click_import.cmd', names)
+                self.assertIn('backup-tool/normalize_capture.py', names)
+                self.assertNotIn('app/release-build.json', names)
+                self.assertEqual(set(manifest['assets']['UNIFIED']['files']), names)
 
     def test_stage_runtime_organizes_editions_and_backup_tool(self):
         from build.stage_runtime import stage_runtime
@@ -645,26 +652,22 @@ class BuildScriptTests(unittest.TestCase):
             output = Path(directory) / 'dist'
             binaries = output / 'bin'
             binaries.mkdir(parents=True)
-            (binaries / 'OverFieldLauncher.exe').write_bytes(b'cn-exe')
-            (binaries / 'OverFieldLauncher-EN.exe').write_bytes(b'en-exe')
+            (binaries / 'OverFieldLauncher.exe').write_bytes(b'unified-exe')
             (binaries / 'LocalUidSDK.dll').write_bytes(b'sdk-dll')
             summary = stage_runtime(ROOT, output, binaries)
-            self.assertEqual(set(path.name for path in output.iterdir()), {'backup-tool', 'bin', 'cn', 'en'})
+            self.assertEqual(set(path.name for path in output.iterdir()), {'backup-tool', 'bin', 'launcher'})
             expected_root = {'OverFieldLauncher.exe', 'README.md', 'app', 'backup-tool', 'docs'}
-            self.assertEqual(set(path.name for path in (output / 'cn').iterdir()), expected_root)
-            self.assertEqual(set(path.name for path in (output / 'en').iterdir()), expected_root)
+            self.assertEqual(set(path.name for path in (output / 'launcher').iterdir()), expected_root)
             self.assertGreater(summary['backupToolFiles'], 10)
-            self.assertEqual((output / 'cn/OverFieldLauncher.exe').read_bytes(), b'cn-exe')
-            self.assertEqual((output / 'en/OverFieldLauncher.exe').read_bytes(), b'en-exe')
-            self.assertEqual((output / 'cn/app/LocalUidSDK.dll').read_bytes(), b'sdk-dll')
-            self.assertEqual((output / 'en/app/LocalUidSDK.dll').read_bytes(), b'sdk-dll')
-            self.assertTrue((output / 'cn/app/World-Control.ps1').is_file())
-            self.assertIn(f"# OverField International Launcher {CONFIG['version']}",
-                          (output / 'en/README.md').read_text(encoding='utf-8'))
-            self.assertIn('# 开放空间私服启动器', (output / 'cn/README.md').read_text(encoding='utf-8'))
-            self.assertFalse((output / 'cn/RELEASE-NOTES.md').exists())
-            self.assertIn('](channel-switch.md)', (output / 'cn/docs/RELEASE-NOTES.md').read_text(encoding='utf-8'))
-            self.assertTrue((output / 'cn/docs/RELEASE-CHECKLIST.md').is_file())
+            self.assertGreater(summary['launcherFiles'], 40)
+            self.assertEqual((output / 'launcher/OverFieldLauncher.exe').read_bytes(), b'unified-exe')
+            self.assertEqual((output / 'launcher/app/LocalUidSDK.dll').read_bytes(), b'sdk-dll')
+            self.assertTrue((output / 'launcher/app/World-Control.ps1').is_file())
+            readme = (output / 'launcher/README.md').read_text(encoding='utf-8')
+            self.assertIn('# 开放空间私服启动器', readme)
+            self.assertIn('OverFieldLauncher-portable.zip', readme)
+            self.assertIn('](channel-switch.md)', (output / 'launcher/docs/RELEASE-NOTES.md').read_text(encoding='utf-8'))
+            self.assertTrue((output / 'launcher/docs/RELEASE-CHECKLIST.md').is_file())
             self.assertTrue((output / 'backup-tool/parse_pcap.py').is_file())
             self.assertFalse((output / 'backup-tool/tools').exists())
             self.assertEqual(list((output / 'backup-tool').rglob('test_*.py')), [])

@@ -402,8 +402,9 @@ def _package(stage, edition, verifier):
         from update_trust import verify_manifest
         verifier = verify_manifest
     manifest = verifier(raw, sig)
+    min_updater = manifest.get('minUpdaterVersion', 999)
     if (manifest.get('schemaVersion') != 1 or manifest.get('repository') != 'inori-dream/miaomiao-launcher'
-            or manifest.get('channel') != 'stable' or manifest.get('minUpdaterVersion', 999) > 1):
+            or manifest.get('channel') != 'stable' or type(min_updater) is not int or not 1 <= min_updater <= 2):
         raise ValueError('unsupported release manifest')
     asset = manifest['assets'][edition]
     files = validate_files(asset['files'])
@@ -500,7 +501,7 @@ def _recover(root, work, dry_run=False):
         raise ValueError('invalid duplicate journal operations')
     if journal.get('state') in ('committed', 'rolled_back'):
         return False
-    if journal.get('state') != 'applying' or journal.get('edition') not in ('CN', 'EN'):
+    if journal.get('state') != 'applying' or journal.get('edition') not in ('UNIFIED', 'CN', 'EN'):
         raise ValueError('invalid unfinished journal state')
     for field in ('old', 'new'):
         records = {op['path']: op[field] for op in operations if op[field] is not None}
@@ -615,8 +616,8 @@ def apply_update(root, stage, edition, parent_pid=None, restart=False, *,
     def finish(result):
         return _restart_result(result, root, edition) if restart and parent_released else result
     try:
-        if edition not in ('CN', 'EN'):
-            raise ValueError('edition must be CN or EN')
+        if edition not in ('UNIFIED', 'CN', 'EN'):
+            raise ValueError('edition must be UNIFIED, CN or EN')
         root = assert_no_reparse(root)
         if not root.is_dir():
             raise ValueError('installation root missing')
@@ -735,7 +736,7 @@ def _installed_edition(root):
         raise ValueError('installation baseline missing')
     doc = _json(path.read_bytes())
     edition = doc.get('edition')
-    if edition not in ('CN', 'EN'):
+    if edition not in ('UNIFIED', 'CN', 'EN'):
         raise ValueError('invalid installation baseline edition')
     return edition
 
@@ -745,7 +746,7 @@ def launch_update(root, stage, edition, parent_pid, restart=False, *, verifier=N
     try:
         root = assert_no_reparse(root)
         stage = assert_no_reparse(stage)
-        if edition not in ('CN', 'EN') or not root.is_dir():
+        if edition not in ('UNIFIED', 'CN', 'EN') or not root.is_dir():
             raise ValueError('invalid root/edition')
         if stage.parent != root / 'runtime/updates/staging' or not stage.is_dir():
             raise ValueError('invalid stage')
@@ -851,14 +852,14 @@ def main(argv=None):
     apply = commands.add_parser('apply')
     apply.add_argument('--root', required=True)
     apply.add_argument('--stage', required=True)
-    apply.add_argument('--edition', choices=['CN', 'EN'], required=True)
+    apply.add_argument('--edition', choices=['UNIFIED', 'CN', 'EN'], required=True)
     apply.add_argument('--parent-pid', type=int)
     apply.add_argument('--restart', action='store_true')
     apply.add_argument('--parent-identity', help=argparse.SUPPRESS)
     launch = commands.add_parser('launch')
     launch.add_argument('--root', required=True)
     launch.add_argument('--stage', required=True)
-    launch.add_argument('--edition', choices=['CN', 'EN'], required=True)
+    launch.add_argument('--edition', choices=['UNIFIED', 'CN', 'EN'], required=True)
     launch.add_argument('--parent-pid', required=True, type=int)
     launch.add_argument('--restart', action='store_true')
     launch_recover = commands.add_parser('launch-recover')
@@ -867,7 +868,7 @@ def main(argv=None):
     launch_recover.add_argument('--restart', action='store_true')
     recover = commands.add_parser('recover')
     recover.add_argument('--root', required=True)
-    recover.add_argument('--edition', required=True, choices=['CN', 'EN'])
+    recover.add_argument('--edition', required=True, choices=['UNIFIED', 'CN', 'EN'])
     recover.add_argument('--parent-pid', required=True, type=int)
     recover.add_argument('--parent-identity', help=argparse.SUPPRESS)
     recover.add_argument('--restart', action='store_true')

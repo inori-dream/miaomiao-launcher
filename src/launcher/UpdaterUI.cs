@@ -26,7 +26,7 @@ namespace OverFieldLocal
         DateTime updaterNextCheck = DateTime.MinValue, updaterPostpone = DateTime.MinValue;
         int updaterCountdown = -1;
         static string UText(string cn, string en) { return Loc.T(cn, en); }
-        string UpdaterEdition { get { return Loc.DefaultEnglish ? "EN" : "CN"; } }
+        string UpdaterEdition { get { return "UNIFIED"; } }
         string UpdaterDirectory { get { return Path.Combine(backend.BaseDir, "runtime", "updates"); } }
 
         Control BuildUpdaterStrip()
@@ -442,7 +442,7 @@ namespace OverFieldLocal
         }
         internal static bool ValidUpdaterStage(string root, string version, string edition, string stage)
         {
-            if (String.IsNullOrWhiteSpace(version) || String.IsNullOrWhiteSpace(stage) || (edition != "CN" && edition != "EN")) return false;
+            if (String.IsNullOrWhiteSpace(version) || String.IsNullOrWhiteSpace(stage) || edition != "UNIFIED") return false;
             foreach (char c in version) if (!(Char.IsDigit(c) || c == '.')) return false;
             try {
                 string expected = Path.GetFullPath(Path.Combine(root, "runtime", "updates", "staging", version + "-" + edition));

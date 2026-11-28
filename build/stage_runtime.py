@@ -1,4 +1,4 @@
-"""Assemble organized edition runtimes and standalone backup-tool under dist/."""
+"""Assemble unified launcher runtime and standalone backup-tool under dist/."""
 import argparse
 import json
 from pathlib import Path, PurePosixPath
@@ -7,13 +7,13 @@ import sys
 
 if __package__:
     from .project_layout import (
-        PROJECT_ROOT, RUNTIME_ROOT, english_readme,
-        release_document, release_version, runtime_directory, source_file,
+        PROJECT_ROOT, RUNTIME_ROOT,
+        release_document, runtime_directory, source_file,
     )
 else:
     from project_layout import (
-        PROJECT_ROOT, RUNTIME_ROOT, english_readme,
-        release_document, release_version, runtime_directory, source_file,
+        PROJECT_ROOT, RUNTIME_ROOT,
+        release_document, runtime_directory, source_file,
     )
 
 sys.path.insert(0, str(RUNTIME_ROOT))
@@ -98,18 +98,11 @@ def stage_runtime(source, output, binaries=None):
     output.mkdir(parents=True, exist_ok=True)
 
     allowed = [name for name in sorted(RELEASE_ALLOWED) if approved_asset(name)]
-    version = release_version(source)
-    cn_readme = release_document(source_file(source, 'README.md').read_bytes())
-    en_readme = english_readme(version)
+    readme_bytes = release_document(source_file(source, 'README.md').read_bytes())
 
-    editions = {}
-    for folder, binary_name, readme_bytes in (
-        ('cn', 'OverFieldLauncher.exe', cn_readme),
-        ('en', 'OverFieldLauncher-EN.exe', en_readme),
-    ):
-        editions[folder] = _stage_edition(
-            source, runtime, binaries, output / folder, binary_name, readme_bytes, allowed
-        )
+    launcher_files = _stage_edition(
+        source, runtime, binaries, output / 'launcher', 'OverFieldLauncher.exe', readme_bytes, allowed
+    )
 
     backup_output = output / 'backup-tool'
     backup_output.mkdir(parents=True, exist_ok=True)
@@ -123,7 +116,7 @@ def stage_runtime(source, output, binaries=None):
         _write_asset(path, output / name)
         backup_files += 1
 
-    return {'editions': editions, 'backupToolFiles': backup_files, 'output': str(output)}
+    return {'launcherFiles': launcher_files, 'backupToolFiles': backup_files, 'output': str(output)}
 
 
 def main():

@@ -341,6 +341,22 @@ class ApplyTests(unittest.TestCase):
         with patch.object(apply, '_processes', side_effect=RuntimeError('CIM unavailable')):
             self.assertEqual(apply.find_busy(self.f.root)[0]['reason'], 'unknown')
 
+    def test_unified_edition_apply_and_manifest_validation(self):
+        with tempfile.TemporaryDirectory(prefix='synthetic-unified-') as temp:
+            f = Fixture(temp, edition='UNIFIED')
+            exe = f.root / 'OverFieldLauncher.exe'
+            exe.write_bytes(b'synthetic-not-executable')
+            row = {'ProcessId': 123, 'ExecutablePath': str(exe), 'CreationDate': 'unique-start'}
+            with patch.object(apply, '_processes', return_value=[row]), \
+                    patch.object(apply.subprocess, 'Popen') as popen:
+                popen.return_value.pid = 456
+                result = apply.launch_update(f.root, f.stage, 'UNIFIED', 123, True,
+                                             verifier=f.verifier, busy_finder=idle)
+                self.assertEqual(result['status'], 'launched', result)
+            result = f.run()
+            self.assertEqual(result['status'], 'applied', result)
+            self.assertEqual(json.loads((f.root / 'runtime/updates/last-update.json').read_text(encoding='utf-8'))['edition'], 'UNIFIED')
+
     def test_edition_does_not_change_launcher_file_name(self):
         """The portable EN package ships OverFieldLauncher.exe, not -EN.exe.
 

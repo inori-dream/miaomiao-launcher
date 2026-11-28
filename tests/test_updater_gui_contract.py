@@ -19,8 +19,9 @@ class UpdaterContract {
   File.WriteAllText(Path.Combine(root,"installation-manifest.json"),"{}");
   Need((bool)call("UpdaterEnvironmentAllowed",new object[]{new string[0],root}),"Ordinary install rejected");
   foreach(string flag in new[]{"--ui-preview","--smoke-test","--verify","--test"})Need(!(bool)call("UpdaterEnvironmentAllowed",new object[]{new[]{flag},root}),"Test mode allowed");
-  Need((bool)call("ValidUpdaterStage",new object[]{root,"1.4.1","CN",Path.Combine(root,"runtime","updates","staging","1.4.1-CN")}),"Valid stage rejected");
-  Need(!(bool)call("ValidUpdaterStage",new object[]{root,"1.4.1","CN",Path.Combine(root,"runtime","updates","staging","1.4.1-EN")}),"Wrong edition accepted");
+  Need((bool)call("ValidUpdaterStage",new object[]{root,"1.6.0","UNIFIED",Path.Combine(root,"runtime","updates","staging","1.6.0-UNIFIED")}),"Valid unified stage rejected");
+  Need(!(bool)call("ValidUpdaterStage",new object[]{root,"1.6.0","UNIFIED",Path.Combine(root,"runtime","updates","staging","1.6.0-EN")}),"Wrong edition path accepted");
+  Need(!(bool)call("ValidUpdaterStage",new object[]{root,"1.6.0","CN",Path.Combine(root,"runtime","updates","staging","1.6.0-CN")}),"Legacy split edition accepted");
   var idle=new Dictionary<string,object>{{"status","idle"},{"busy",new object[0]}};
   Need((bool)call("UpdaterProbeAllowsAction",new object[]{idle,false}),"Idle rejected");
   Need(!(bool)call("UpdaterProbeAllowsAction",new object[]{new Dictionary<string,object>{{"status","idle"},{"busy",new Dictionary<string,object>()}},false}),"Empty dictionary is not a busy list");
@@ -75,6 +76,5 @@ class UpdaterGuiContractTests(unittest.TestCase):
         r=subprocess.run([str(self.exe),str(source_file(ROOT, name)),str(self.root/(name+'-data'))],capture_output=True,timeout=20)
         self.assertEqual(r.returncode,0,r.stderr.decode('utf-8',errors='replace'))
         self.assertIn(b'PASS',r.stdout)
-    def test_cn_policy(self):self.check('OverFieldLauncher.exe')
-    def test_en_policy(self):self.check('OverFieldLauncher-EN.exe')
+    def test_unified_policy(self):self.check('OverFieldLauncher.exe')
 if __name__=='__main__':unittest.main()

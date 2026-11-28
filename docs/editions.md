@@ -1,29 +1,22 @@
-# 两版启动器 / Two launcher editions
+# 统一启动器与多存档模式 / Unified launcher & save modes
 
-## 中文国服版
+## 单一多语言、全区服启动器（v1.6.0 起）
 
-- 中文界面，默认国服单机档案 `profiles/solo`。
-- 使用已有的兼容国服 PC 客户端；不包含游戏，不自动下载游戏。
-- 服务端端口为 18080 / 18100 / 18200，房间管理端口为 18300。
+- 单一 `OverFieldLauncher.exe` 内置 **4 个语种（简体中文 / 繁體中文 / English / 日本語 / 한국어）**，首次启动根据网络区域与系统界面语言自动初始化，支持在侧边栏实时切换，无需再分别下载 CN 或 EN 安装包。
+- 同一个启动器内支持 B站（PCGameSDK）、TapTap（QuickSDK PC）与 Steam（QuickSDK Overseas）客户端的启动、本地 UID 登录及公服采集。
+- Steam 私服副本适配仍采用固定校验白名单，遇到未知更新版本的游戏客户端将安全拒绝。
 
-## English international edition
+## 独立存档与端口隔离
 
-- English launcher UI; the default Steam world is stored in `profiles/steam`.
-- Select your installed Steam OverField client folder containing `launcher.exe`.
-- Uses a private copy; never changes the original official client or reuses official login credentials.
-- Server ports: 20080 / 20100 / 20200; room administration: 20300.
-- The Steam adapter is locked to a tested game binary hash. An unknown updated game build fails closed.
-- Launcher UI language is independent of the game's own language setting. This release does not force an unverified game language enum value.
+- 存档 A（`profiles/solo`）：默认端口 `18080 / 18100 / 18200`，房间管理端口 `18300`。
+- 存档 B（`profiles/steam`）：独立端口 `20080 / 20100 / 20200`，房间管理端口 `20300`。
+- 局域网模式（`profiles/host`）：端口 `19080 / 19100 / 19200`，房间管理仅监听本机。
 
-## Isolation and verification / 隔离与验证
+两套本地存档的数据库、进程状态、控制器互斥锁和端口均完全隔离，可各自切换 B站 / TapTap / Steam 客户端使用；但公服采集期间请确保本地私服客户端与服务处于停止状态，避免流量混淆。
 
-Two local worlds have separate database paths, process records, controller locks, and ports. Keep the two portable packages in separate folders. Their local worlds can run concurrently. LAN mode still uses the existing dedicated host mode; do not publish two LAN host instances on the same default host ports.
+## Historical dual-edition note / 历史说明
 
-v1.2.1 验证结果：两份 EXE 编译成功；135 项自动回归通过，12 组常规/最小窗口布局通过；两套真实空账号服务并行端口就绪；Steam 私服副本适配器再次返回 `adapter-ready`，测试后自动关闭。
-
-The user confirmed the international edition working before v1.2.0 became stable. For v1.2.1, automated regression, UI layout, real parallel server startup and Steam adapter installation were repeated. This is not a claim that every gameplay feature or future client build is supported.
-
-公服采集仍独立于私服目录：按原版客户端流程采集，保存账号 ZIP；不要公开个人存档或账号包。
+v1.5.1 及更早版本曾拆分为 CN / EN 两个独立构建与便携包。v1.2.1 曾验证过两套服务端并行就绪与 Steam 私服副本适配，后续 v1.6.0 起统一由单包提供全部语言与渠道能力；旧版 `launcher.settings-en.json` 会在首次启动统一版时自动兼容读取。
 
 ## Credits / 致谢
 

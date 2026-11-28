@@ -14,17 +14,10 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
 [assembly: System.Reflection.AssemblyVersion("1.1.0.0")]
-#if ENGLISH
-[assembly: System.Reflection.AssemblyFileVersion("1.5.1.0")]
-[assembly: System.Reflection.AssemblyInformationalVersion("1.5.1")]
-[assembly: System.Reflection.AssemblyTitle("OverField International Launcher")]
-[assembly: System.Reflection.AssemblyProduct("OverField International Launcher")]
-#else
-[assembly: System.Reflection.AssemblyFileVersion("1.5.1.0")]
-[assembly: System.Reflection.AssemblyInformationalVersion("1.5.1")]
+[assembly: System.Reflection.AssemblyFileVersion("1.6.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("1.6.0")]
 [assembly: System.Reflection.AssemblyTitle("开放空间私服启动器")]
 [assembly: System.Reflection.AssemblyProduct("开放空间私服启动器")]
-#endif
 
 namespace OverFieldLocal
 {
@@ -52,9 +45,7 @@ namespace OverFieldLocal
                 catch (Exception) { MessageBox.Show(Loc.S("无法确认旧启动器已退出，请手动以管理员身份重启。")); return; }
             }
             bool created;
-            // Separate names so the national and the international launcher can
-            // both be open at once instead of one focusing the other.
-            string instanceName = Loc.English ? "Local\\OverFieldLocalLauncherEN" : "Local\\OverFieldLocalLauncher";
+            const string instanceName = "Local\\OverFieldLocalLauncher";
             using (var instance = new Mutex(true, instanceName, out created))
             {
                 if (!created && Array.IndexOf(args, "--ui-preview") < 0)
@@ -230,16 +221,16 @@ namespace OverFieldLocal
         public string BilibiliOfficialPath = "", TapTapOfficialPath = "", SteamOfficialPath = "";
         public volatile bool CaptureStartInFlight;
         public string Python;
-        public string Mode = Loc.DefaultEnglish ? "steam" : "solo";
+        public string Mode = "solo";
         public string HostAddress;
         public uint Uid = 1000000;
         public bool HasSavedLanguage;
         public string LanguageSource = "";
-        // Each edition owns its default settings file, while both editions share
-        // unified 5-language support and Bilibili/TapTap/Steam launch & capture.
+        // Single unified launcher supporting all 5 UI locales (zh-CN/zh-TW/en/ja/ko)
+        // and Bilibili/TapTap/Steam launch & capture with one settings file.
         public static readonly string[] KnownModes = { "solo", "host", "steam" };
         public static readonly string[] KnownChannels = { "auto", "bilibili", "taptap", "steam" };
-        public static string SettingsName { get { return Loc.DefaultEnglish ? "launcher.settings-en.json" : "launcher.settings.json"; } }
+        public static string SettingsName { get { return "launcher.settings.json"; } }
         public string ProfilePath { get { return Path.Combine(BaseDir, "profiles", Mode); } }
         public string ClientExe { get { return Path.Combine(ProfilePath, "client", "launcher.exe"); } }
         internal string ControlScript;
@@ -347,6 +338,11 @@ namespace OverFieldLocal
             var addresses = LanAddresses(); HostAddress = addresses.Count > 0 ? addresses[0] : "";
             Python = "";
             var path = Path.Combine(BaseDir, SettingsName);
+            if (!File.Exists(path))
+            {
+                string legacyEnPath = Path.Combine(BaseDir, "launcher.settings-en.json");
+                if (File.Exists(legacyEnPath)) path = legacyEnPath;
+            }
             if (File.Exists(path))
                 try
                 {

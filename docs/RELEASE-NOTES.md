@@ -2,6 +2,13 @@
 
 清爽的天空蓝与海洋青动漫风界面，提供单机/局域网服务管理、本地 UID 登录、独立存档、账号数据导入与备份，以及房间和玩家管理。按钮加大、间距更宽，小窗口使用滚动布局，避免文字相互挤压。
 
+## v1.6.0 合并为单一多语言全区服启动器
+
+- **不再区分 CN / EN 双版本**：将原国服版与英文国际版合并为单一启动器 `OverFieldLauncher.exe` 与单一便携包 `OverFieldLauncher-portable.zip`。
+- **四语五项内置切换**：一个启动器完整支持 中文（简体 / 繁体）、English、日本語、한국어，首次启动按系统 UI 语言与 IP 网络区域自动初始化，也可在界面随时实时切换；默认设置文件统一为 `launcher.settings.json`（兼容自动读取旧版 `launcher.settings-en.json`）。
+- **单一签名更新包**：自动更新切换为统一的 `OverFieldLauncher-update.zip`（`edition: UNIFIED`，`minUpdaterVersion: 2`）；`v1.4.x` / `v1.5.x` 用户覆盖升级一次到 `v1.6.0`（保留 `profiles/`、`runtime/` 与 `launcher.settings*.json`）后即可继续通过单一更新包自动更新。
+- **构建与主仓库同步**：`build.cmd` 输出统一至 `dist/launcher/`，主仓库 README 与 GitHub 仓库简介已同步调整。
+
 ## v1.5.1 实时采集兼容、多版本一键导入与自动更新完善
 
 - **公服实时采集修复**：修复 `progress.json` 多进程原子替换并发冲突导致的清单停更；新增 `NdisEtwCapture` ETW 监听配合 `LiveRawCapture` / `PktMon`，解决部分网卡环境实时采集 0 包及停止前已采结果丢失问题。

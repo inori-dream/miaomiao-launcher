@@ -225,6 +225,35 @@ class SignedDownloadTests(unittest.TestCase):
                 updater._transport(updater.LATEST_URL)
             sleep.assert_not_called()
 
+    def test_unified_v2_manifest_download_and_legacy_mismatch_rejected(self):
+        unified_manifest = {
+            'schemaVersion': 1, 'repository': trust.REPOSITORY, 'version': '1.6.0',
+            'releaseTag': 'v1.6.0', 'channel': 'stable', 'minUpdaterVersion': 2,
+            'assets': {'UNIFIED': {
+                'name': 'OverFieldLauncher-update.zip',
+                'url': trust.asset_url('v1.6.0', 'OverFieldLauncher-update.zip'),
+                'size': len(self.payload),
+                'sha256': hashlib.sha256(self.payload).hexdigest(),
+                'files': {'launcher.py': {'size': len(self.content), 'sha256': hashlib.sha256(self.content).hexdigest()}},
+            }},
+        }
+        def unified_transport(url):
+            raw = json.dumps(unified_manifest).encode()
+            if url == updater.LATEST_URL:
+                names = ['launcher-update.json', 'launcher-update.sig', 'OverFieldLauncher-update.zip']
+                return json.dumps({'draft': False, 'prerelease': False, 'tag_name': 'v1.6.0',
+                                   'assets': [{'name': n, 'browser_download_url': trust.asset_url('v1.6.0', n)} for n in names]}).encode()
+            if url.endswith('launcher-update.json'):
+                return raw
+            if url.endswith('launcher-update.sig'):
+                return self.sign(raw)
+            return self.payload
+        res = updater.check_update(self.root, 'UNIFIED', '1.5.1', force=True, transport=unified_transport)
+        self.assertEqual(res['status'], 'downloaded', res)
+        self.assertTrue(res['stage_dir'].endswith('1.6.0-UNIFIED'))
+        # Wrong edition on a unified v2 manifest must fail cleanly.
+        self.assertEqual(updater.check_update(self.root, 'CN', '1.5.1', force=True, transport=unified_transport)['status'], 'error')
+
     def test_en_selection_and_inventory_hash(self):
         result = updater.check_update(self.root,'EN','1.3.0',transport=self.transport)
         self.assertEqual(result['status'],'downloaded',result)

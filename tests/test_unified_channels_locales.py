@@ -207,9 +207,9 @@ class LiveRegressionFixesTests(unittest.TestCase):
             tshark.parent.mkdir(parents=True)
             py.write_bytes(b'MZ')
             tshark.write_bytes(b'MZ')
-            dist_cn = fake_repo / 'dist/cn'
-            dist_cn.mkdir(parents=True)
-            with patch.object(capture, 'BASE', dist_cn), \
+            dist_launcher = fake_repo / 'dist/launcher'
+            dist_launcher.mkdir(parents=True)
+            with patch.object(capture, 'BASE', dist_launcher), \
                  patch.object(capture, 'can_decode', side_effect=lambda p: p == py), \
                  patch.object(capture.shutil, 'which', return_value=None):
                 self.assertEqual(capture.python_exe(), py)
@@ -265,7 +265,7 @@ class GeoCheck {
         var loc = asm.GetType("OverFieldLocal.Loc", true);
         var parse = loc.GetMethod("ParseGeoCountryCode", BindingFlags.Public | BindingFlags.Static);
         var map = loc.GetMethod("LocaleFromCountryCode", BindingFlags.Public | BindingFlags.Static);
-        bool enDefault = (bool)loc.GetField("DefaultEnglish").GetValue(null);
+        string initialLocale = (string)loc.GetField("InitialLocale").GetValue(null);
         Need((string)parse.Invoke(null, new object[]{" CN \n"}) == "CN", "plain text");
         Need((string)parse.Invoke(null, new object[]{"{\"ip\":\"1.2.3.4\",\"country\":\"jp\"}"}) == "JP", "json");
         Need((string)parse.Invoke(null, new object[]{"<html>gateway</html>"}) == "", "html");
@@ -276,7 +276,9 @@ class GeoCheck {
         Need((string)map.Invoke(null, new object[]{"JP"}) == "ja", "JP");
         Need((string)map.Invoke(null, new object[]{"KR"}) == "ko", "KR");
         Need((string)map.Invoke(null, new object[]{"US"}) == "en", "US");
-        Need((string)map.Invoke(null, new object[]{"XX"}) == (enDefault ? "en" : "zh-CN"), "fallback");
+        Need((string)map.Invoke(null, new object[]{"XX"}) == initialLocale, "fallback");
+        var supported = (string[])loc.GetField("SupportedLocales").GetValue(null);
+        Need(supported.Length == 5, "all 5 locales present");
         Console.WriteLine("PASS");
     }
 }
@@ -288,10 +290,9 @@ class GeoCheck {
             cs.write_text(harness, encoding='utf-8-sig')
             subprocess.run([str(csc), '/nologo', '/target:exe', '/out:' + str(exe), str(cs)],
                            capture_output=True, text=True, check=True)
-            for name in ('OverFieldLauncher.exe', 'OverFieldLauncher-EN.exe'):
-                out = subprocess.run([str(exe), str(source_file(ROOT, name))],
-                                     capture_output=True, text=True, check=True)
-                self.assertIn('PASS', out.stdout)
+            out = subprocess.run([str(exe), str(source_file(ROOT, 'OverFieldLauncher.exe'))],
+                                 capture_output=True, text=True, check=True)
+            self.assertIn('PASS', out.stdout)
 
     def test_direct_capture_progress_reader_on_compiled_launchers(self):
         if os.name != 'nt':
@@ -375,12 +376,11 @@ class ProgressCheck {
             cs.write_text(harness, encoding='utf-8-sig')
             subprocess.run([str(csc), '/nologo', '/target:exe', '/out:' + str(exe), str(cs)],
                            capture_output=True, text=True, check=True)
-            for idx, name in enumerate(('OverFieldLauncher.exe', 'OverFieldLauncher-EN.exe')):
-                work = Path(d) / f'work_{idx}'
-                work.mkdir()
-                out = subprocess.run([str(exe), str(source_file(ROOT, name)), str(work)],
-                                     capture_output=True, text=True, check=True)
-                self.assertIn('PASS', out.stdout)
+            work = Path(d) / 'work'
+            work.mkdir()
+            out = subprocess.run([str(exe), str(source_file(ROOT, 'OverFieldLauncher.exe')), str(work)],
+                                 capture_output=True, text=True, check=True)
+            self.assertIn('PASS', out.stdout)
 
     def test_environment_compatibility_helpers(self):
         import capture_import
