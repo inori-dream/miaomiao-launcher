@@ -40,19 +40,34 @@ def is_linked_path(name):
     return any(name == linked or name.startswith(linked + '/') for linked in LINK_DIRECTORIES)
 
 
-def linked_file_digest(path):
+def _lstat_regular_file(path, entry_stat=None):
+    """Return lstat result only when ``path`` is a regular, non-linked file."""
+    path = Path(path)
+    if entry_stat is None:
+        if is_reparse_point(path) or not path.is_file():
+            raise ValueError('Client identity requires a regular, non-linked file: ' + str(path))
+        return os.lstat(path)
+    try:
+        if entry_stat.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+            raise ValueError('Client identity requires a regular, non-linked file: ' + str(path))
+    except AttributeError:
+        if path.is_symlink():
+            raise ValueError('Client identity requires a regular, non-linked file: ' + str(path))
+    if not stat.S_ISREG(entry_stat.st_mode):
+        raise ValueError('Client identity requires a regular, non-linked file: ' + str(path))
+    return entry_stat
+
+
+def linked_file_digest(path, entry_stat=None):
     """Identify a linked asset without full-hashing multi-gigabyte bundles.
 
     Tiny assets (<= 4 KiB) still hash file bytes so rapid same-size content
     edits are detected; larger immutable bundles record a SHA-256 over their
     size and mtime_ns after verifying no reparse point is present.
     """
-    path = Path(path)
-    if is_reparse_point(path) or not path.is_file():
-        raise ValueError('Client identity requires a regular, non-linked file: ' + str(path))
-    st = os.lstat(path)
+    st = _lstat_regular_file(path, entry_stat)
     if st.st_size <= LINKED_CONTENT_HASH_LIMIT:
-        return file_digest(path)
+        return file_digest(path, entry_stat=st)
     token = f'linked:{st.st_size}:{st.st_mtime_ns}'.encode('ascii')
     return hashlib.sha256(token).hexdigest()
 
@@ -84,20 +99,23 @@ def is_writable_name(name):
     return any(fnmatch.fnmatchcase(name, pattern) for pattern in WRITABLE_NAMES)
 
 
-def file_digest(path):
+def file_digest(path, entry_stat=None):
     """Hash a regular file without following a reparse point."""
     path = Path(path)
     for attempt in range(10):
         try:
-            if is_reparse_point(path) or not path.is_file():
-                raise ValueError('Client identity requires a regular, non-linked file: ' + str(path))
-            digest = hashlib.sha256()
+            _lstat_regular_file(path, entry_stat if attempt == 0 else None)
             with path.open('rb') as stream:
-                for chunk in iter(lambda: stream.read(1024 * 1024), b''):
-                    digest.update(chunk)
+                if hasattr(hashlib, 'file_digest'):
+                    hexdig = hashlib.file_digest(stream, 'sha256').hexdigest()
+                else:
+                    digest = hashlib.sha256()
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                        digest.update(chunk)
+                    hexdig = digest.hexdigest()
             if is_reparse_point(path):
                 raise ValueError('Client file became linked while hashing: ' + str(path))
-            return digest.hexdigest()
+            return hexdig
         except OSError as error:
             if getattr(error, 'winerror', None) not in (5, 32, 33) or attempt == 9:
                 raise
@@ -118,10 +136,18 @@ def _scan(client, allow_links=False, private_copy=False, reject_unknown_files=Fa
             child = Path(entry.path)
             parts = relative + (entry.name,)
             name = '/'.join(parts)
-            linked = is_reparse_point(child)
+            writable = any(is_writable_name(part) for part in parts)
+            try:
+                entry_stat = entry.stat(follow_symlinks=False)
+                try:
+                    linked = bool(entry_stat.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+                except AttributeError:
+                    linked = child.is_symlink()
+            except OSError:
+                entry_stat = None
+                linked = is_reparse_point(child)
             # Runtime caches are never imported into a rebuild. They are still
             # inspected for links so a cache cannot become an escape hatch.
-            writable = any(is_writable_name(part) for part in parts)
             if linked:
                 if (allow_links and name in LINK_DIRECTORIES and is_junction(child)
                         and entry.is_dir(follow_symlinks=False)):
@@ -131,23 +157,24 @@ def _scan(client, allow_links=False, private_copy=False, reject_unknown_files=Fa
                 continue
             if writable:
                 continue
-            if entry.is_dir(follow_symlinks=False):
+            is_dir = stat.S_ISDIR(entry_stat.st_mode) if entry_stat is not None else entry.is_dir(follow_symlinks=False)
+            if is_dir:
                 # Unknown top-level installation folders may contain saves or
                 # updater state. Mirror an empty private folder, never copy it.
                 if private_copy and not relative and entry.name != 'launcher_Data':
                     visit(child, parts, record_files=False)
                     continue
                 visit(child, parts)
-            elif entry.is_file(follow_symlinks=False):
+            elif stat.S_ISREG(entry_stat.st_mode) if entry_stat is not None else entry.is_file(follow_symlinks=False):
                 if not record_files:
                     if reject_unknown_files:
                         raise ValueError('Unexpected file in private runtime directory: ' + str(child))
                     continue
                 if private_copy and not relative and entry.name == 'client-ready.json':
                     continue
-                files[name] = (linked_file_digest(child)
+                files[name] = (linked_file_digest(child, entry_stat=entry_stat)
                                if not allow_links and is_linked_path(name)
-                               else file_digest(child))
+                               else file_digest(child, entry_stat=entry_stat))
             else:
                 raise ValueError('Unsupported client filesystem entry: ' + str(child))
 
@@ -193,7 +220,7 @@ def read_ready_marker(marker):
     recorded = json.loads(marker.read_text(encoding='utf-8-sig'))
     if not isinstance(recorded, dict) or recorded.get('schema') != MARKER_SCHEMA:
         raise ValueError('Legacy or unsupported client-ready marker; rebuild the private copy.')
-    if recorded.get('adapter') not in ('pcgamesdk', 'quicksdk-pc'):
+    if recorded.get('adapter') not in ('pcgamesdk', 'quicksdk-pc', 'steam-quicksdk'):
         raise ValueError('Unsupported client-ready adapter.')
     for field in ('files', 'copies', 'links'):
         if not isinstance(recorded.get(field), dict):
@@ -264,11 +291,35 @@ def cache_matches(client, marker, replacements=None, source_identity=None):
         return False
 
 
+def _contains_marker(path, marker):
+    """Scan potentially large metadata without loading huge buffers at once."""
+    overlap = len(marker)
+    tail = b''
+    with Path(path).open('rb') as stream:
+        while True:
+            chunk = stream.read(4 * 1024 * 1024)
+            if not chunk:
+                return False
+            window = tail + chunk
+            if marker in window:
+                return True
+            tail = window[-overlap:]
+
+
 def classify(client):
     client = Path(client)
     plugins = client / 'launcher_Data/Plugins'
-    if is_reparse_point(plugins / 'x86_64/PCGameSDK.dll') or is_reparse_point(plugins / 'Win/PCSDK_release/PCSDKUI.exe'):
+    metadata = client / 'launcher_Data/il2cpp_data/Metadata/global-metadata.dat'
+    if (is_reparse_point(plugins / 'x86_64/PCGameSDK.dll')
+            or is_reparse_point(plugins / 'Win/PCSDK_release/PCSDKUI.exe')
+            or is_reparse_point(plugins / 'x86_64/steam_api64.dll')
+            or is_reparse_point(metadata)):
         raise ValueError('Linked channel SDK files are not trusted.')
+    # Steam builds also bundle PCSDKUI.exe. Detect verified Steam QuickSDK metadata
+    # before falling back to generic QuickSDK PC so Steam keeps its own runner/app id.
+    if (plugins / 'x86_64/steam_api64.dll').is_file():
+        if metadata.is_file() and _contains_marker(metadata, b'QuickSDK_Oversea_steam\x00'):
+            return 'steam-quicksdk'
     if (plugins / 'x86_64/PCGameSDK.dll').is_file():
         return 'pcgamesdk'
     if (plugins / 'Win/PCSDK_release/PCSDKUI.exe').is_file():

@@ -21,10 +21,40 @@ if _SELF_DIR not in sys.path:
     sys.path.insert(0, _SELF_DIR)
 from urllib.parse import urlparse
 
+STEAM_APP_ID = '3879660'
 STEAM_GAME_URL = re.compile(r'^steam://rungameid/(\d+)/?$', re.IGNORECASE)
 STEAM_PROTOCOL = 'steam://rungameid/{}'
 SERVER_CONFIG = 'launcher_Data/StreamingAssets/Config.txt'
 PRIVATE_ADDRESS = re.compile(r'^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.)')
+
+
+def parse_vdf(text):
+    """Parse Valve KeyValues (libraryfolders.vdf / appmanifest_*.acf) safely."""
+    tokens = re.findall(r'"((?:\\.|[^"\\])*)"|([{}])', re.sub(r'(?m)^\s*//.*$', '', text))
+    stack = [{}]
+    key = None
+    for quoted, brace in tokens:
+        if brace == '{':
+            if key is None:
+                raise ValueError('Invalid VDF object.')
+            child = {}
+            stack[-1][key] = child
+            stack.append(child)
+            key = None
+        elif brace == '}':
+            if key is not None or len(stack) == 1:
+                raise ValueError('Unbalanced VDF object.')
+            stack.pop()
+        else:
+            value = re.sub(r'\\([\\"])', r'\1', quoted)
+            if key is None:
+                key = value
+            else:
+                stack[-1][key] = value
+                key = None
+    if len(stack) != 1 or key is not None:
+        raise ValueError('Incomplete VDF file.')
+    return stack[0]
 
 
 class Launched:
@@ -90,27 +120,113 @@ def _steam_roots():
 def steam_install_dir(app_id):
     """Resolve the installed game folder for an app id, or None when unknown."""
     libraries = []
+    seen = set()
     for root in _steam_roots():
-        libraries.append(root)
-        listing = root / 'steamapps' / 'libraryfolders.vdf'
-        if listing.is_file():
-            text = listing.read_text(encoding='utf-8-sig', errors='replace')
-            for match in re.finditer(r'"path"\s+"([^"]+)"', text):
-                candidate = Path(match.group(1).replace('\\\\', '\\'))
-                if candidate.is_dir():
-                    libraries.append(candidate)
+        for folder_candidate in _library_folders_from_root(root):
+            key = str(folder_candidate).lower()
+            if key not in seen and folder_candidate.is_dir():
+                seen.add(key)
+                libraries.append(folder_candidate)
     for library in libraries:
         manifest = library / 'steamapps' / 'appmanifest_{0}.acf'.format(app_id)
         if not manifest.is_file():
             continue
         text = manifest.read_text(encoding='utf-8-sig', errors='replace')
-        match = re.search(r'"installdir"\s+"([^"]+)"', text)
-        if not match:
+        installdir = None
+        try:
+            installdir = parse_vdf(text).get('AppState', {}).get('installdir')
+        except ValueError:
+            installdir = None
+        if not installdir:
+            match = re.search(r'"installdir"\s+"([^"]+)"', text)
+            installdir = match.group(1) if match else None
+        if not installdir:
             continue
-        folder = library / 'steamapps' / 'common' / match.group(1)
+        folder = library / 'steamapps' / 'common' / installdir
         if folder.is_dir():
             return folder
     return None
+
+
+def _library_folders_from_root(root):
+    folders = [root]
+    listing = root / 'steamapps' / 'libraryfolders.vdf'
+    if not listing.is_file():
+        return folders
+    text = listing.read_text(encoding='utf-8-sig', errors='replace')
+    parsed_any = False
+    try:
+        entries = parse_vdf(text).get('libraryfolders', {})
+        if isinstance(entries, dict):
+            for entry in entries.values():
+                if isinstance(entry, dict) and isinstance(entry.get('path'), str):
+                    folders.append(Path(entry['path']))
+                    parsed_any = True
+    except ValueError:
+        parsed_any = False
+    if not parsed_any:
+        for match in re.finditer(r'"path"\s+"([^"]+)"', text):
+            folders.append(Path(match.group(1).replace('\\\\', '\\')))
+    return folders
+
+
+def resolve_client_dir(path):
+    """Resolve the game directory containing launcher_Data from an EXE or .url."""
+    path = Path(path)
+    app_id = steam_app_id(path)
+    if app_id is not None:
+        return steam_install_dir(app_id)
+    folder = path if path.is_dir() else path.parent
+    for candidate in (folder, folder / 'OverField Game'):
+        if (candidate / 'launcher_Data').is_dir() or (candidate / 'launcher.exe').is_file():
+            return candidate
+    return folder
+
+
+def detect_channel(value):
+    """Identify official/private client channel ('bilibili', 'taptap', 'steam', or 'unknown')."""
+    if not value:
+        return {'channel': 'unknown', 'identity': 'unknown', 'clientDir': ''}
+    path = Path(value)
+    app_id = steam_app_id(path)
+    if app_id is not None:
+        install = steam_install_dir(app_id)
+        return {
+            'channel': 'steam',
+            'identity': 'steam-quicksdk',
+            'appId': app_id,
+            'clientDir': str(install) if install else '',
+        }
+    client_dir = resolve_client_dir(path)
+    if client_dir is None or not client_dir.is_dir():
+        return {'channel': 'unknown', 'identity': 'unknown', 'clientDir': ''}
+    try:
+        from client_identity import classify
+        identity = classify(client_dir)
+    except (ValueError, OSError, ImportError):
+        identity = 'unknown'
+    if identity == 'unknown' and (client_dir / 'launcher_Data/Plugins/x86_64/steam_api64.dll').is_file():
+        identity = 'steam-quicksdk'
+    if identity == 'steam-quicksdk':
+        channel = 'steam'
+    elif identity == 'pcgamesdk':
+        channel = 'bilibili'
+    elif identity in ('quicksdk-pc', 'unverified-tap'):
+        channel = 'taptap'
+    else:
+        channel = 'unknown'
+    return {'channel': channel, 'identity': identity, 'clientDir': str(client_dir)}
+
+
+def discover_clients():
+    """Read-only auto-discovery of installed official clients (currently Steam library)."""
+    found = {}
+    steam = steam_install_dir(STEAM_APP_ID)
+    if steam is not None and (steam / 'launcher.exe').is_file():
+        exe = steam / 'launcher.exe'
+        info = detect_channel(exe)
+        found['steam'] = {'path': str(exe), 'dir': str(steam), 'appId': STEAM_APP_ID, **info}
+    return found
 
 
 def server_addresses(client):
@@ -245,6 +361,13 @@ def launch_official(value, base=None):
         # and the licensed game. No shell string and no private environment.
         os.startfile(url)
         return Launched(_await_steam_game(install), 'steam', install or url)
-    return Launched(subprocess.Popen([str(path)], cwd=str(path.parent), env=clean_environment(),
+    env = clean_environment()
+    channel_info = detect_channel(path)
+    kind = 'exe'
+    if channel_info.get('channel') == 'steam':
+        env.setdefault('SteamAppId', STEAM_APP_ID)
+        env.setdefault('SteamGameId', STEAM_APP_ID)
+        kind = 'steam'
+    return Launched(subprocess.Popen([str(path)], cwd=str(path.parent), env=env,
                                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                     stderr=subprocess.DEVNULL, creationflags=0).pid, 'exe', path.parent)
+                                     stderr=subprocess.DEVNULL, creationflags=0).pid, kind, path.parent)

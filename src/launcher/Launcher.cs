@@ -15,13 +15,13 @@ using System.Windows.Forms;
 
 [assembly: System.Reflection.AssemblyVersion("1.1.0.0")]
 #if ENGLISH
-[assembly: System.Reflection.AssemblyFileVersion("1.5.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersion("1.5.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.5.1.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("1.5.1")]
 [assembly: System.Reflection.AssemblyTitle("OverField International Launcher")]
 [assembly: System.Reflection.AssemblyProduct("OverField International Launcher")]
 #else
-[assembly: System.Reflection.AssemblyFileVersion("1.5.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersion("1.5.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.5.1.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("1.5.1")]
 [assembly: System.Reflection.AssemblyTitle("开放空间私服启动器")]
 [assembly: System.Reflection.AssemblyProduct("开放空间私服启动器")]
 #endif
@@ -223,31 +223,129 @@ namespace OverFieldLocal
         public readonly string BaseDir = AppDomain.CurrentDomain.BaseDirectory;
         public string Root = "";
         public string OfficialLauncherPath = "";
+        public string Language = Loc.CurrentLocale;
+        public string Channel = "auto";
+        public string CaptureChannel = "auto";
+        public string BilibiliRoot = "", TapTapRoot = "", SteamRoot = "";
+        public string BilibiliOfficialPath = "", TapTapOfficialPath = "", SteamOfficialPath = "";
         public volatile bool CaptureStartInFlight;
         public string Python;
-        public string Mode = Loc.English ? "steam" : "solo";
+        public string Mode = Loc.DefaultEnglish ? "steam" : "solo";
         public string HostAddress;
         public uint Uid = 1000000;
-        // Each edition owns its settings file. Sharing one would let the English
-        // launcher overwrite the Chinese launcher's game folder, UID and mode.
+        public bool HasSavedLanguage;
+        public string LanguageSource = "";
+        // Each edition owns its default settings file, while both editions share
+        // unified 5-language support and Bilibili/TapTap/Steam launch & capture.
         public static readonly string[] KnownModes = { "solo", "host", "steam" };
-        public static string SettingsName { get { return Loc.English ? "launcher.settings-en.json" : "launcher.settings.json"; } }
+        public static readonly string[] KnownChannels = { "auto", "bilibili", "taptap", "steam" };
+        public static string SettingsName { get { return Loc.DefaultEnglish ? "launcher.settings-en.json" : "launcher.settings.json"; } }
         public string ProfilePath { get { return Path.Combine(BaseDir, "profiles", Mode); } }
         public string ClientExe { get { return Path.Combine(ProfilePath, "client", "launcher.exe"); } }
         internal string ControlScript;
         internal int ControlTimeoutMilliseconds = 180000;
         readonly CancellationTokenSource lifetime = new CancellationTokenSource();
+        internal CancellationToken LifetimeToken { get { return lifetime.Token; } }
         public void CancelAll() { lifetime.Cancel(); }
         public string AppFile(string name)
         {
             string nested = Path.Combine(BaseDir, "app", name);
             return File.Exists(nested) ? nested : Path.Combine(BaseDir, name);
         }
+        public static string NormalizeChannel(string value)
+        {
+            if (String.IsNullOrWhiteSpace(value)) return "auto";
+            string v = value.Trim().ToLowerInvariant();
+            if (Array.IndexOf(KnownChannels, v) >= 0) return v;
+            return "auto";
+        }
+        public string GetChannelRoot(string channel)
+        {
+            if (channel == "bilibili") return BilibiliRoot ?? "";
+            if (channel == "taptap") return TapTapRoot ?? "";
+            if (channel == "steam") return SteamRoot ?? "";
+            return Root ?? "";
+        }
+        public void SetChannelRoot(string channel, string path)
+        {
+            path = path ?? "";
+            if (channel == "bilibili") BilibiliRoot = path;
+            else if (channel == "taptap") TapTapRoot = path;
+            else if (channel == "steam") SteamRoot = path;
+        }
+        public string GetOfficialPath(string channel)
+        {
+            if (channel == "bilibili") return BilibiliOfficialPath ?? "";
+            if (channel == "taptap") return TapTapOfficialPath ?? "";
+            if (channel == "steam") return SteamOfficialPath ?? "";
+            return OfficialLauncherPath ?? "";
+        }
+        public void SetOfficialPath(string channel, string path)
+        {
+            path = path ?? "";
+            if (channel == "bilibili") BilibiliOfficialPath = path;
+            else if (channel == "taptap") TapTapOfficialPath = path;
+            else if (channel == "steam") SteamOfficialPath = path;
+        }
+        public static string DetectChannel(string clientExe)
+        {
+            if (String.IsNullOrWhiteSpace(clientExe)) return "unknown";
+            try
+            {
+                string dir = Directory.Exists(clientExe) ? clientExe : Path.GetDirectoryName(clientExe);
+                if (String.IsNullOrWhiteSpace(dir)) return "unknown";
+                string overfield = Path.Combine(dir, "OverField Game");
+                if (File.Exists(Path.Combine(overfield, "launcher.exe"))) dir = overfield;
+                string plugins = Path.Combine(dir, "launcher_Data", "Plugins");
+                if (File.Exists(Path.Combine(plugins, "x86_64", "steam_api64.dll"))) return "steam";
+                if (File.Exists(Path.Combine(plugins, "x86_64", "PCGameSDK.dll"))) return "bilibili";
+                if (File.Exists(Path.Combine(plugins, "Win", "PCSDK_release", "PCSDKUI.exe"))
+                    || File.Exists(Path.Combine(plugins, "x86_64", "tapsdkcore.dll"))
+                    || File.Exists(Path.Combine(plugins, "x86_64", "taptap_api.dll")))
+                    return "taptap";
+            }
+            catch { }
+            return "unknown";
+        }
+        static bool IsUsablePython(string candidate)
+        {
+            if (String.IsNullOrWhiteSpace(candidate)) return false;
+            if (candidate.IndexOf("\\Microsoft\\WindowsApps\\", StringComparison.OrdinalIgnoreCase) >= 0) return false;
+            try
+            {
+                if (!File.Exists(candidate)) return false;
+                return new FileInfo(candidate).Length > 16384;
+            }
+            catch { return false; }
+        }
+        static string StripPowerShell7Modules(string value)
+        {
+            if (String.IsNullOrEmpty(value)) return value;
+            var kept = new List<string>();
+            foreach (string part in value.Split(Path.PathSeparator))
+            {
+                if (String.IsNullOrWhiteSpace(part)) continue;
+                string norm = part.Replace('/', '\\');
+                if (norm.IndexOf("\\PowerShell\\7", StringComparison.OrdinalIgnoreCase) >= 0
+                    || norm.IndexOf("\\PowerShell\\6", StringComparison.OrdinalIgnoreCase) >= 0)
+                    continue;
+                kept.Add(part);
+            }
+            return String.Join(Path.PathSeparator.ToString(), kept.ToArray());
+        }
+        static void ApplyPowerShellCompatEnv(ProcessStartInfo info, string executable)
+        {
+            if (info == null || String.IsNullOrEmpty(executable)) return;
+            if (!String.Equals(Path.GetFileName(executable), "powershell.exe", StringComparison.OrdinalIgnoreCase)) return;
+            string current = Environment.GetEnvironmentVariable("PSModulePath");
+            if (!String.IsNullOrEmpty(current))
+                info.EnvironmentVariables["PSModulePath"] = StripPowerShell7Modules(current);
+        }
         public Backend()
         {
             ControlScript = AppFile("World-Control.ps1");
             var addresses = LanAddresses(); HostAddress = addresses.Count > 0 ? addresses[0] : "";
-            Python = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Python", "Python312", "python.exe");
+            Python = "";
             var path = Path.Combine(BaseDir, SettingsName);
             if (File.Exists(path))
                 try
@@ -255,23 +353,87 @@ namespace OverFieldLocal
                     var data = new JavaScriptSerializer().Deserialize<Dictionary<string, string>>(File.ReadAllText(path, Encoding.UTF8));
                     if (data.ContainsKey("gameRoot")) Root = data["gameRoot"];
                     if (data.ContainsKey("officialLauncherPath")) OfficialLauncherPath = data["officialLauncherPath"];
-                    if (data.ContainsKey("pythonExe")) Python = data["pythonExe"];
+                    if (data.ContainsKey("pythonExe") && IsUsablePython(data["pythonExe"])) Python = data["pythonExe"];
                     if (data.ContainsKey("mode") && Array.IndexOf(KnownModes, data["mode"]) >= 0) Mode = data["mode"];
                     if (data.ContainsKey("hostAddress") && !String.IsNullOrWhiteSpace(data["hostAddress"])) HostAddress = data["hostAddress"];
                     if (data.ContainsKey("uid")) { uint parsed; if (UInt32.TryParse(data["uid"], out parsed) && parsed > 0) Uid = parsed; }
+                    if (data.ContainsKey("languageSource")) LanguageSource = (data["languageSource"] ?? "").Trim();
+                    if (data.ContainsKey("language") && !String.IsNullOrWhiteSpace(data["language"]))
+                    {
+                        Language = Loc.NormalizeLocale(data["language"]);
+                        Loc.SetLocale(Language);
+                        HasSavedLanguage = true;
+                        if (String.IsNullOrEmpty(LanguageSource)) LanguageSource = "user";
+                    }
+                    if (data.ContainsKey("channel")) Channel = NormalizeChannel(data["channel"]);
+                    if (data.ContainsKey("captureChannel")) CaptureChannel = NormalizeChannel(data["captureChannel"]);
+                    if (data.ContainsKey("bilibiliRoot")) BilibiliRoot = data["bilibiliRoot"] ?? "";
+                    if (data.ContainsKey("taptapRoot")) TapTapRoot = data["taptapRoot"] ?? "";
+                    if (data.ContainsKey("steamRoot")) SteamRoot = data["steamRoot"] ?? "";
+                    if (data.ContainsKey("bilibiliOfficialPath")) BilibiliOfficialPath = data["bilibiliOfficialPath"] ?? "";
+                    if (data.ContainsKey("taptapOfficialPath")) TapTapOfficialPath = data["taptapOfficialPath"] ?? "";
+                    if (data.ContainsKey("steamOfficialPath")) SteamOfficialPath = data["steamOfficialPath"] ?? "";
                 }
                 catch { }
+            if (!String.IsNullOrWhiteSpace(Root))
+            {
+                string detected = DetectChannel(FindClient(Root));
+                if (detected != "unknown" && String.IsNullOrWhiteSpace(GetChannelRoot(detected))) SetChannelRoot(detected, Root);
+            }
+            if (!String.IsNullOrWhiteSpace(OfficialLauncherPath))
+            {
+                string detectedOfficial = DetectChannel(OfficialLauncherPath);
+                if (OfficialLauncherPath.EndsWith(".url", StringComparison.OrdinalIgnoreCase)) detectedOfficial = "steam";
+                if (detectedOfficial != "unknown" && String.IsNullOrWhiteSpace(GetOfficialPath(detectedOfficial))) SetOfficialPath(detectedOfficial, OfficialLauncherPath);
+            }
             string bundled = Path.Combine(BaseDir, "runtime-python", "python.exe");
-            if (File.Exists(bundled)) Python = bundled;
-            if (!File.Exists(Python))
+            string toolsPy = Path.Combine(BaseDir, "backup-tool", "tools", "python", "python.exe");
+            string repoToolsPy = Path.GetFullPath(Path.Combine(BaseDir, "..", "..", "src", "runtime", "backup-tool", "tools", "python", "python.exe"));
+            if (IsUsablePython(bundled)) Python = bundled;
+            if (!IsUsablePython(Python) && IsUsablePython(toolsPy)) Python = toolsPy;
+            if (!IsUsablePython(Python))
+            {
+                string localPy = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Python");
+                foreach (string ver in new[] { "Python313", "Python312", "Python311" })
+                {
+                    string candidate = Path.Combine(localPy, ver, "python.exe");
+                    if (IsUsablePython(candidate)) { Python = candidate; break; }
+                }
+            }
+            if (!IsUsablePython(Python))
                 foreach (string folder in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(';'))
-                    if (File.Exists(Path.Combine(folder, "python.exe"))) { Python = Path.Combine(folder, "python.exe"); break; }
+                {
+                    if (String.IsNullOrWhiteSpace(folder)) continue;
+                    string candidate = Path.Combine(folder.Trim(), "python.exe");
+                    if (IsUsablePython(candidate)) { Python = candidate; break; }
+                }
+            if (!IsUsablePython(Python) && IsUsablePython(repoToolsPy)) Python = repoToolsPy;
+            if (String.IsNullOrEmpty(Python)) Python = bundled;
         }
         public void Save()
         {
             var path = Path.Combine(BaseDir, SettingsName);
             var temp = path + ".tmp";
-            File.WriteAllText(temp, new JavaScriptSerializer().Serialize(new Dictionary<string, string> { { "gameRoot", Root }, { "officialLauncherPath", OfficialLauncherPath }, { "pythonExe", Python }, { "mode", Mode }, { "hostAddress", HostAddress }, { "uid", Uid.ToString() } }), new UTF8Encoding(false));
+            var payload = new Dictionary<string, string>
+            {
+                { "gameRoot", Root },
+                { "officialLauncherPath", OfficialLauncherPath },
+                { "pythonExe", Python },
+                { "mode", Mode },
+                { "hostAddress", HostAddress },
+                { "uid", Uid.ToString() },
+                { "language", HasSavedLanguage ? Loc.CurrentLocale : "" },
+                { "languageSource", LanguageSource ?? "" },
+                { "channel", Channel ?? "auto" },
+                { "captureChannel", CaptureChannel ?? "auto" },
+                { "bilibiliRoot", BilibiliRoot ?? "" },
+                { "taptapRoot", TapTapRoot ?? "" },
+                { "steamRoot", SteamRoot ?? "" },
+                { "bilibiliOfficialPath", BilibiliOfficialPath ?? "" },
+                { "taptapOfficialPath", TapTapOfficialPath ?? "" },
+                { "steamOfficialPath", SteamOfficialPath ?? "" },
+            };
+            File.WriteAllText(temp, new JavaScriptSerializer().Serialize(payload), new UTF8Encoding(false));
             if (File.Exists(path)) File.Replace(temp, path, null); else File.Move(temp, path);
         }
         public static List<string> LanAddresses()
@@ -298,9 +460,56 @@ namespace OverFieldLocal
             }
             return b.Append('\\', slashes * 2).Append('"').ToString();
         }
+        public List<string> ActiveWorldModes()
+        {
+            var active = new List<string>();
+            string runtime = Path.Combine(BaseDir, "runtime");
+            if (!Directory.Exists(runtime)) return active;
+            var serializer = new JavaScriptSerializer();
+            foreach (string mode in KnownModes)
+            {
+                string file = Path.Combine(runtime, "world-state-" + mode + ".json");
+                if (!File.Exists(file)) continue;
+                try
+                {
+                    var state = serializer.Deserialize<Dictionary<string, object>>(ReadSharedUtf8Text(file));
+                    if (state != null && state.ContainsKey("Active") && Convert.ToBoolean(state["Active"]))
+                        active.Add(mode);
+                }
+                catch { }
+            }
+            string legacy = Path.Combine(runtime, "world-state.json");
+            if (File.Exists(legacy))
+            {
+                try
+                {
+                    var state = serializer.Deserialize<Dictionary<string, object>>(ReadSharedUtf8Text(legacy));
+                    if (state != null && state.ContainsKey("Active") && Convert.ToBoolean(state["Active"]))
+                    {
+                        string legacyMode = state.ContainsKey("Mode") ? Convert.ToString(state["Mode"]) : Mode;
+                        if (Array.IndexOf(KnownModes, legacyMode) >= 0 && !active.Contains(legacyMode))
+                            active.Add(legacyMode);
+                    }
+                }
+                catch { }
+            }
+            return active;
+        }
+        public ServiceStatus StatusForMode(string mode)
+        {
+            var r = RunMode(mode, "Status");
+            if (r.Code != 0) throw new InvalidOperationException(r.Error.Length > 0 ? r.Error : Loc.S("无法读取服务状态。"));
+            return new JavaScriptSerializer().Deserialize<ServiceStatus>(r.Output);
+        }
         public Result Run(string action, bool launch = false, CancellationToken cancellation = default(CancellationToken))
-        {            var arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File " + Quote(ControlScript) + " -Action " + action + " -GameRoot " + Quote(Root);
-            arguments += " -Mode " + Mode + " -HostAddress " + Quote(Mode != "host" ? "127.0.0.1" : HostAddress) + " -Uid " + Uid.ToString();
+        {
+            return RunMode(Mode, action, launch, cancellation);
+        }
+        public Result RunMode(string mode, string action, bool launch = false, CancellationToken cancellation = default(CancellationToken))
+        {
+            string targetMode = String.IsNullOrWhiteSpace(mode) ? Mode : mode;
+            var arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File " + Quote(ControlScript) + " -Action " + action + " -GameRoot " + Quote(Root);
+            arguments += " -Mode " + targetMode + " -HostAddress " + Quote(targetMode != "host" ? "127.0.0.1" : HostAddress) + " -Uid " + Uid.ToString();
             if (action == "Status") arguments += " -Json";
             if (action == "Start" || action == "Backup") arguments += " -PythonExe " + Quote(Python);
             if (action == "Stop") arguments += " -StopServer";
@@ -376,12 +585,12 @@ namespace OverFieldLocal
             {
                 using (var process = new Process())
                 {
-                    process.StartInfo = new ProcessStartInfo(
-                        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe"),
-                        arguments)
+                    string psExe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe");
+                    process.StartInfo = new ProcessStartInfo(psExe, arguments)
                     { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = BaseDir,
                       RedirectStandardOutput = true, RedirectStandardError = true,
                       StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8 };
+                    ApplyPowerShellCompatEnv(process.StartInfo, psExe);
                     process.Start();
                     // Drain both pipes asynchronously: reading one to EOF before the
                     // other can deadlock and make window close unbounded.
@@ -406,6 +615,7 @@ namespace OverFieldLocal
                 linked.Token.ThrowIfCancellationRequested();
                 p.StartInfo = new ProcessStartInfo(executable, arguments) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = BaseDir,
                     RedirectStandardOutput = capture, RedirectStandardError = capture };
+                ApplyPowerShellCompatEnv(p.StartInfo, executable);
                 if (capture) { p.StartInfo.StandardOutputEncoding = Encoding.UTF8; p.StartInfo.StandardErrorEncoding = Encoding.UTF8; }
                 linked.Token.ThrowIfCancellationRequested();
                 p.Start();
@@ -439,6 +649,7 @@ namespace OverFieldLocal
         public static string FindClient(string root)
         {
             if (String.IsNullOrWhiteSpace(root)) return null;
+            if (File.Exists(root) && root.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) return root;
             var direct = new[] { Path.Combine(root, "OverField Game", "launcher.exe"), Path.Combine(root, "launcher.exe") };
             foreach (var candidate in direct) if (File.Exists(candidate)) return candidate;
             try
@@ -507,12 +718,113 @@ namespace OverFieldLocal
                 if (parsed != null)
                 {
                     if (parsed.ContainsKey("error")) message = Convert.ToString(parsed["error"]);
-                    if (Loc.English && parsed.ContainsKey("errorEn")) message = Convert.ToString(parsed["errorEn"]);
+                    if (Loc.CurrentLocale == "en" && parsed.ContainsKey("errorEn")) message = Convert.ToString(parsed["errorEn"]);
                 }
             }
             catch { }
             message = Loc.S(message);
             return !String.IsNullOrWhiteSpace(message) ? message : fallback;
+        }
+        static string ReadSharedUtf8Text(string path)
+        {
+            for (int attempt = 0; attempt < 4; attempt++)
+            {
+                try
+                {
+                    using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                    using (var reader = new StreamReader(stream, new UTF8Encoding(false), true))
+                        return reader.ReadToEnd();
+                }
+                catch (IOException)
+                {
+                    if (attempt == 3) throw;
+                    Thread.Sleep(15);
+                }
+            }
+            return "";
+        }
+        bool IsUnderCaptureSessions(string target)
+        {
+            if (String.IsNullOrWhiteSpace(target)) return false;
+            try
+            {
+                string sessions = Path.GetFullPath(Path.Combine(BaseDir, "runtime", "capture-sessions"));
+                string prefix = sessions.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                string resolved = Path.GetFullPath(target).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                return resolved.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return false; }
+        }
+        static string FileSignature(string path)
+        {
+            var info = new FileInfo(path);
+            return path + "|" + info.LastWriteTimeUtc.Ticks.ToString() + "|" + info.Length.ToString();
+        }
+        public bool TryReadCaptureProgressDirect(string previousSourceKey, out Dictionary<string, object> data, out string sourceKey, out bool waitingForInitialFile, out bool unchanged)
+        {
+            data = null;
+            sourceKey = previousSourceKey ?? "";
+            waitingForInitialFile = false;
+            unchanged = false;
+            try
+            {
+                string statePath = Path.Combine(BaseDir, "runtime", "capture-state.json");
+                if (!File.Exists(statePath)) return false;
+                var serializer = new JavaScriptSerializer();
+                var state = serializer.Deserialize<Dictionary<string, object>>(ReadSharedUtf8Text(statePath));
+                if (state == null) return false;
+                string phase = state.ContainsKey("phase") ? Convert.ToString(state["phase"]) : "";
+                bool active = state.ContainsKey("active") && Convert.ToBoolean(state["active"]);
+                string exportDir = state.ContainsKey("export") ? Convert.ToString(state["export"]) : "";
+                string captureDir = state.ContainsKey("capturePath") ? Convert.ToString(state["capturePath"]) : "";
+                if (phase == "complete" && IsUnderCaptureSessions(exportDir))
+                {
+                    string cached = Path.Combine(Path.GetFullPath(exportDir), "capture-checklist.json");
+                    if (File.Exists(cached))
+                    {
+                        string nextKey = FileSignature(cached);
+                        if (nextKey == sourceKey) { unchanged = true; return true; }
+                        var parsed = serializer.Deserialize<Dictionary<string, object>>(ReadSharedUtf8Text(cached));
+                        if (parsed != null && parsed.ContainsKey("items"))
+                        {
+                            data = parsed;
+                            sourceKey = nextKey;
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+                if (IsUnderCaptureSessions(captureDir))
+                {
+                    string livePath = Path.Combine(Path.GetFullPath(captureDir), "live-progress", "progress.json");
+                    if (File.Exists(livePath))
+                    {
+                        string nextKey = FileSignature(livePath);
+                        if (nextKey == sourceKey) { unchanged = true; return true; }
+                        var parsed = serializer.Deserialize<Dictionary<string, object>>(ReadSharedUtf8Text(livePath));
+                        if (parsed != null && parsed.ContainsKey("items"))
+                        {
+                            data = parsed;
+                            sourceKey = nextKey;
+                            return true;
+                        }
+                    }
+                    if (active || phase == "capturing" || phase == "starting")
+                    {
+                        waitingForInitialFile = true;
+                        sourceKey = "";
+                        return true;
+                    }
+                }
+                if (!active && phase == "idle")
+                {
+                    waitingForInitialFile = true;
+                    sourceKey = "";
+                    return true;
+                }
+                return false;
+            }
+            catch { return false; }
         }
         public Dictionary<string, object> Official(string action, string extra = "")
         {
@@ -545,6 +857,17 @@ namespace OverFieldLocal
             if (allowOverwrite) arguments += " --allow-overwrite";
             var result = Execute(Python, arguments);
             if (result.Code != 0) throw new InvalidOperationException(ExtractJsonError(result, Loc.S("存档导入失败。")));
+            return new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(result.Output);
+        }
+        public Dictionary<string, object> OneClickImport(string action, string path, uint uid, bool allowOverwrite = false)
+        {
+            string script = AppFile("one_click_import.py");
+            if (!File.Exists(script)) return Capture(action == "plan" ? "inspect" : action, path, uid, false, allowOverwrite);
+            string arguments = "-B -X utf8 " + Quote(script) + " " + action + " --file " + Quote(path) + " --profile " + Quote(ProfilePath);
+            if (uid > 0) arguments += " --uid " + uid.ToString();
+            if (allowOverwrite) arguments += " --allow-overwrite";
+            var result = ExecuteProcess(Python, arguments, 60000, true, CancellationToken.None);
+            if (result.Code != 0) throw new InvalidOperationException(ExtractJsonError(result, Loc.S("一键导入失败。")));
             return new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(result.Output);
         }
         public void PrepareProfile()
@@ -580,14 +903,22 @@ namespace OverFieldLocal
         readonly ListView captureChecklist = new ListView();
         readonly Label captureProgressHint = new Label();
         readonly System.Windows.Forms.Timer captureProgressTimer = new System.Windows.Forms.Timer();
-        readonly ActionButton soloMode = new ActionButton(Loc.S("单机模式")), steamMode = new ActionButton(Loc.S("国际服")), hostMode = new ActionButton(Loc.S("局域网服务")), captureMode = new ActionButton(Loc.S("公服采集")), importData = new ActionButton(Loc.S("导入数据")), backupData = new ActionButton(Loc.S("备份存档")), openData = new ActionButton(Loc.S("数据目录")), firewall = new ActionButton(Loc.S("局域网权限")), roomsButton=new ActionButton(Loc.S("房间与玩家"));
+        readonly ActionButton soloMode = new ActionButton(Loc.S("单机模式")), steamMode = new ActionButton(Loc.S("国际服")), hostMode = new ActionButton(Loc.S("局域网服务")), captureMode = new ActionButton(Loc.S("公服采集")), importData = new ActionButton(Loc.S("导入数据")), backupData = new ActionButton(Loc.S("备份存档")), openData = new ActionButton(Loc.S("数据目录")), firewall = new ActionButton(Loc.S("局域网权限")), roomsButton = new ActionButton(Loc.S("房间与玩家"));
+        readonly ActionButton detectWorldClient = new ActionButton(Loc.S("查找 Steam")), captureDetectBtn = new ActionButton(Loc.S("查找 Steam"));
         readonly NumericUpDown uidBox = new NumericUpDown();
-        readonly ComboBox hostBox = new ComboBox();
+        readonly ComboBox hostBox = new ComboBox(), languageBox = new ComboBox(), worldChannelBox = new ComboBox(), captureChannelBox = new ComboBox();
         readonly Label profileLabel = new Label(), modeHint = new Label();
         Surface capturePage;
         Panel mainScroll;
         readonly Label captureSteps = new Label();
         readonly Label headline = new Label(), subtitle = new Label(), badge = new Label(), footer = new Label();
+        Label sideTitleLabel, sideLangLabel, sideSectionLabel, soloDescLabel, steamDescLabel, hostDescLabel, captureDescLabel, roomsDescLabel, sideFooterDescLabel;
+        Label heroBrandLabel, settingsTitleLabel, worldChannelLabel, channelStatusLabel, addressLabel;
+        Label captureTitleLabel, captureChannelLabel, capturePathDescLabel, captureListTitleLabel, logsTitleLabel;
+        LinkLabel openLogsLink;
+        bool updatingUiControls, userSelectedLanguage, skipIpLocale;
+        Dictionary<string, object> lastCaptureProgressData;
+        string lastCaptureProgressSourceKey = "";
         readonly TextBox rootPath = new TextBox();
         readonly RichTextBox logs = new RichTextBox();
         readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
@@ -596,31 +927,85 @@ namespace OverFieldLocal
         ServiceStatus lastStatus;
         string lastStatusError, smokePath;
         bool verify, uiPreview;
-        string uiPreviewDir, uiPage="";
+        string uiPreviewDir, uiPage = "";
         public LauncherForm(string[] args)
         {
-            Text = Loc.S("开放空间 · 本地启动器"); Font = Theme.Font(10); BackColor = Theme.Bg; ForeColor = Theme.Text;
-            ClientSize = new Size(1240, 900); MinimumSize = new Size(1040, 740); StartPosition = FormStartPosition.CenterScreen;
-            AutoScaleMode = AutoScaleMode.Dpi; DoubleBuffered = true;
-            string iconPath = backend.AppFile("launcher.ico");
-            if (File.Exists(iconPath)) Icon = new Icon(iconPath);
+            string requestedLanguage = null;
             for (int i = 0; i < args.Length; i++)
             {
                 if (args[i] == "--smoke-test" && i + 1 < args.Length) smokePath = args[++i];
                 else if (args[i] == "--verify") verify = true;
-                else if (args[i] == "--ui-preview" && i + 1 < args.Length) { uiPreview=true;uiPreviewDir=args[++i]; }
-                else if (args[i] == "--ui-mode" && i + 1 < args.Length) { string m=args[++i];if(Array.IndexOf(Backend.KnownModes,m)>=0)backend.Mode=m; }
-                else if (args[i] == "--ui-page" && i + 1 < args.Length) { uiPage=args[++i]; }
-                else if (args[i] == "--ui-size" && i + 1 < args.Length) { string[] s=args[++i].Split('x');int w,h;if(s.Length==2 && Int32.TryParse(s[0],out w) && Int32.TryParse(s[1],out h))ClientSize=new Size(Math.Max(1024,w),Math.Max(700,h)); }
+                else if (args[i] == "--ui-preview" && i + 1 < args.Length) { uiPreview = true; uiPreviewDir = args[++i]; }
+                else if (args[i] == "--ui-mode" && i + 1 < args.Length) { string m = args[++i]; if (Array.IndexOf(Backend.KnownModes, m) >= 0) backend.Mode = m; }
+                else if (args[i] == "--ui-page" && i + 1 < args.Length) { uiPage = args[++i]; }
+                else if (args[i] == "--language" && i + 1 < args.Length) { requestedLanguage = args[++i]; }
+                else if (args[i] == "--no-ip-locale") { skipIpLocale = true; }
+                else if (args[i] == "--ui-size" && i + 1 < args.Length) { string[] s = args[++i].Split('x'); int w, h; if (s.Length == 2 && Int32.TryParse(s[0], out w) && Int32.TryParse(s[1], out h)) ClientSize = new Size(Math.Max(1024, w), Math.Max(700, h)); }
             }
-            if(uiPreview) { backend.HostAddress="192.168.1.10";backend.Uid=1000000;backend.Root=""; }
+            if (!String.IsNullOrWhiteSpace(requestedLanguage)) { Loc.SetLocale(requestedLanguage); backend.Language = Loc.CurrentLocale; skipIpLocale = true; }
+            Text = Loc.S("开放空间 · 本地启动器"); Font = Theme.Font(10); BackColor = Theme.Bg; ForeColor = Theme.Text;
+            if (ClientSize.Width < 1040 || ClientSize.Height < 740) ClientSize = new Size(1240, 900);
+            MinimumSize = new Size(1040, 740); StartPosition = FormStartPosition.CenterScreen;
+            AutoScaleMode = AutoScaleMode.Dpi; DoubleBuffered = true;
+            AllowDrop = true;
+            DragEnter += delegate(object sender, DragEventArgs e)
+            {
+                if (!busy && !closing && e.Data != null && e.Data.GetDataPresent(DataFormats.FileDrop))
+                    e.Effect = DragDropEffects.Copy;
+            };
+            DragDrop += async delegate(object sender, DragEventArgs e)
+            {
+                if (busy || closing || e.Data == null) return;
+                var dropped = e.Data.GetData(DataFormats.FileDrop) as string[];
+                if (dropped != null && dropped.Length > 0 && !String.IsNullOrWhiteSpace(dropped[0]))
+                    await ImportCapturePath(dropped[0]);
+            };
+            string iconPath = backend.AppFile("launcher.ico");
+            if (File.Exists(iconPath)) Icon = new Icon(iconPath);
+            if (uiPreview) { backend.HostAddress = "192.168.1.10"; backend.Uid = 1000000; backend.Root = ""; }
             BuildLayout();
+            RefreshLocalization();
             ConfigureAccessibility();
             ApplyMode();
             ShowCapturePage(false);
+            languageBox.SelectedIndexChanged += delegate
+            {
+                if (updatingUiControls || closing || languageBox.SelectedIndex < 0 || languageBox.SelectedIndex >= Loc.SupportedLocales.Length) return;
+                string selectedLocale = Loc.SupportedLocales[languageBox.SelectedIndex];
+                userSelectedLanguage = true;
+                backend.HasSavedLanguage = true;
+                backend.LanguageSource = "user";
+                Loc.SetLocale(selectedLocale);
+                backend.Language = selectedLocale;
+                if (!uiPreview) try { backend.Save(); } catch { }
+                RefreshLocalization();
+            };
+            worldChannelBox.SelectedIndexChanged += delegate
+            {
+                if (updatingUiControls || closing || worldChannelBox.SelectedIndex < 0 || worldChannelBox.SelectedIndex >= Backend.KnownChannels.Length) return;
+                string selectedChannel = Backend.KnownChannels[worldChannelBox.SelectedIndex];
+                backend.Channel = selectedChannel;
+                string stored = selectedChannel == "auto" ? backend.Root : backend.GetChannelRoot(selectedChannel);
+                if (!String.IsNullOrWhiteSpace(stored)) backend.Root = stored;
+                rootPath.Text = String.IsNullOrWhiteSpace(backend.Root) ? Loc.S("单机模式：请选择本地客户端目录") : backend.Root;
+                UpdateChannelBadge();
+                if (!uiPreview) try { backend.Save(); } catch { }
+            };
+            captureChannelBox.SelectedIndexChanged += delegate
+            {
+                if (updatingUiControls || closing || captureChannelBox.SelectedIndex < 0 || captureChannelBox.SelectedIndex >= Backend.KnownChannels.Length) return;
+                string selectedChannel = Backend.KnownChannels[captureChannelBox.SelectedIndex];
+                backend.CaptureChannel = selectedChannel;
+                string stored = selectedChannel == "auto" ? backend.OfficialLauncherPath : backend.GetOfficialPath(selectedChannel);
+                if (!String.IsNullOrWhiteSpace(stored)) backend.OfficialLauncherPath = stored;
+                officialLauncherPath.Text = String.IsNullOrWhiteSpace(backend.OfficialLauncherPath) ? Loc.S("请选择公服启动器或未修改的原版客户端 EXE") : backend.OfficialLauncherPath;
+                if (!uiPreview) try { backend.Save(); } catch { }
+            };
+            detectWorldClient.Click += async delegate { await DetectSteamClientAsync(false); };
+            captureDetectBtn.Click += async delegate { await DetectSteamClientAsync(true); };
             soloMode.Click += async delegate { await SwitchMode("solo"); };
             steamMode.Click += async delegate { await SwitchMode("steam"); };
-            captureMode.Click += async delegate { ShowCapturePage(true); if(!uiPreview) { await RefreshCaptureState(); await RefreshCaptureProgress(); } };
+            captureMode.Click += async delegate { ShowCapturePage(true); if (!uiPreview) { await RefreshCaptureState(); await RefreshCaptureProgress(); } };
             officialBrowse.Click += async delegate { await ChooseOfficialLauncher(); };
             capturePreflight.Click += async delegate {
                 if(busy || captureRunning || uiPreview) return;
@@ -663,6 +1048,33 @@ namespace OverFieldLocal
                     SetBusy(true, Loc.S("正在预检查采集环境"));
                     var report = await Task.Run(() => backend.Official("preflight"));
                     if(closing)return;
+                    if (OnlyPrivateWorldBlockedPreflight(report))
+                    {
+                        var activeModes = backend.ActiveWorldModes();
+                        foreach (string activeMode in activeModes)
+                        {
+                            var st = await Task.Run(() => backend.StatusForMode(activeMode));
+                            if (closing) return;
+                            if (st != null && st.ClientRunning)
+                            {
+                                string msg = Loc.S("请先退出私服游戏，再开始公服采集，避免流量混入私服。");
+                                Append(msg);
+                                captureHint.Text = msg;
+                                MessageBox.Show(this, msg, Loc.S("请先退出游戏"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                                return;
+                            }
+                        }
+                        if (activeModes.Count > 0)
+                        {
+                            SetBusy(true, Loc.S("正在停止私服服务并准备采集"));
+                            foreach (string activeMode in activeModes)
+                                await Task.Run(() => backend.RunMode(activeMode, "Stop"));
+                            if (closing) return;
+                            Append(Loc.S("已自动停止运行中的私服服务。"));
+                            report = await Task.Run(() => backend.Official("preflight"));
+                            if (closing) return;
+                        }
+                    }
                     Append(PreflightText(report));
                     if(report.ContainsKey("needsElevation") && Convert.ToBoolean(report["needsElevation"]))
                     {
@@ -684,11 +1096,16 @@ namespace OverFieldLocal
                     if(closing)return;
                     if(!result.ContainsKey("officialKind")) throw new InvalidOperationException(Loc.S("采集启动结果不完整，请检查状态后重试。"));
                     captureRunning = true; lastCaptureZip = ""; lastCaptureIncomplete = false;
+                    lastCaptureProgressData = null;
+                    lastCaptureProgressSourceKey = "";
+                    captureSaveZip.Enabled = false;
+                    PopulateInitialChecklistRows();
+                    captureProgressHint.Text = Loc.S("只有成功解码的公服响应才算已采集；快照暂不可读会显示暂时无法判断，结束后按完整数据核对。");
                     bool steam = Convert.ToString(result["officialKind"])=="steam";
                     Append(steam ? Loc.S("抓包已就绪，正在通过 Steam 启动客户端。公服路径未使用私服副本或本地UID。") : Loc.S("抓包已就绪，已启动配置的公服启动器。公服路径未使用私服副本或本地UID。"));
                     if (steam && result.ContainsKey("officialPid") && Convert.ToInt32(result["officialPid"])==0)
                         Append(Loc.S("Steam 正在启动游戏；如果它弹出登录或更新窗口，请先完成，进入游戏后开始加载要保存的界面。"));
-                    if (result.ContainsKey("hint")) Append(Convert.ToString(result["hint"]));
+                    if (result.ContainsKey("hint")) Append(Loc.S(Convert.ToString(result["hint"])));
                     captureHint.Text = Loc.S("采集中：公服启动器已打开，请正常登录并加载要保存的界面，完成后点「结束采集」。");
                 }
                 catch (Exception error)
@@ -697,7 +1114,7 @@ namespace OverFieldLocal
                     if (!uiPreview && smokePath == null && !closing)
                         MessageBox.Show(this, Friendly.WithCaptureCauses(Friendly.Describe(error, Loc.S("开始采集"))), Loc.S("开始采集失败"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
-                finally { backend.CaptureStartInFlight=false; SetBusy(false, ""); }
+                finally { captureStartInFlight = false; backend.CaptureStartInFlight=false; SetBusy(false, ""); }
                 await RefreshCaptureState();
                 await RefreshCaptureProgress();
             };
@@ -710,6 +1127,7 @@ namespace OverFieldLocal
                 {
                     var captured = await Task.Run(() => backend.Official("stop"));
                     captureRunning = false;
+                    lastCaptureProgressSourceKey = "";
                     await RefreshCaptureProgress();
                     string captureWarning = CaptureIncompleteWarning(captured);
                     lastCaptureIncomplete = captureWarning.Length > 0;
@@ -838,8 +1256,8 @@ namespace OverFieldLocal
             browse.Click += BrowseRoot;
             roomsButton.Click += delegate { string blocked=PrivateOperationBlockReason(); if(blocked.Length>0)Append(blocked);else if(!busy) { using(var dialog=new RoomManagerForm(backend)) dialog.ShowDialog(this); } };
             timer.Interval = 5000; timer.Tick += async delegate { await RefreshStatus(); };
-            captureProgressTimer.Interval=2500;
-            captureProgressTimer.Tick+=async delegate { if(capturePage.Visible && !uiPreview) await RefreshCaptureProgress(); };
+            captureProgressTimer.Interval=1000;
+            captureProgressTimer.Tick+=async delegate { if(capturePage.Visible && !uiPreview && !captureStartInFlight && !busy) await RefreshCaptureProgress(); };
             Shown += async delegate
             {
                 if(uiPreview) {
@@ -862,6 +1280,11 @@ namespace OverFieldLocal
                     return;
                 }
                 Append(Loc.S("启动器已就绪，正在读取本地服务状态。"));
+                bool captureElevatedStart = Array.IndexOf(args, "--capture-after-elevation") >= 0;
+                if (!skipIpLocale && !backend.HasSavedLanguage && !captureElevatedStart)
+                {
+                    var unusedIpLocale = InitializeLanguageFromIpAsync();
+                }
                 await RefreshStatus(); if (closing) return; timer.Start(); captureProgressTimer.Start();
                 if (verify) await Verify();
                 if (Array.IndexOf(args,"--rooms-smoke")>=0)
@@ -986,6 +1409,30 @@ namespace OverFieldLocal
             catch (OverflowException) { return ""; }
             return count > 0 ? Loc.S("检测到抓包缺口或未解析的流尾部，备份可能不完整；仍可保存已解码账号 ZIP。") : "";
         }
+        static bool OnlyPrivateWorldBlockedPreflight(Dictionary<string, object> report)
+        {
+            if (report == null || !report.ContainsKey("checks")) return false;
+            if (report.ContainsKey("ok") && Convert.ToBoolean(report["ok"])) return false;
+            if (report.ContainsKey("needsElevation") && Convert.ToBoolean(report["needsElevation"])) return false;
+            bool hasPrivateWorldError = false;
+            var checks = report["checks"] as System.Collections.IEnumerable;
+            if (checks == null) return false;
+            foreach (object entry in checks)
+            {
+                var row = entry as Dictionary<string, object>;
+                if (row == null) continue;
+                string id = row.ContainsKey("id") ? Convert.ToString(row["id"]) : "";
+                string state = row.ContainsKey("state") ? Convert.ToString(row["state"]) : "";
+                if (id == "location" || id == "output_permissions" || id == "administrator" || id == "pktmon") continue;
+                if (id == "private_world")
+                {
+                    if (state == "error" || state == "unknown") hasPrivateWorldError = true;
+                    continue;
+                }
+                if (state != "ok") return false;
+            }
+            return hasPrivateWorldError;
+        }
         string PreflightText(Dictionary<string,object> report, bool compact = false)
         {
             var text=new StringBuilder();
@@ -997,8 +1444,8 @@ namespace OverFieldLocal
                 var row=value as Dictionary<string,object>;if(row==null)continue;
                 string state=row.ContainsKey("state")?Convert.ToString(row["state"]):"unknown";
                 string label=state=="ok"?Loc.S("通过"):state=="warning"?Loc.S("注意"):state=="error"?Loc.S("失败"):Loc.S("未确认");
-                string key=Loc.English && row.ContainsKey("messageEn")?"messageEn":"message";
-                string message=row.ContainsKey(key)?Convert.ToString(row[key]):"";
+                string key=Loc.CurrentLocale == "en" && row.ContainsKey("messageEn")?"messageEn":"message";
+                string message=row.ContainsKey(key)?Loc.S(Convert.ToString(row[key])):"";
                 if(compact || state!="error"){message=message.Replace("\r","").Split('\n')[0];if(message.Length>240)message=message.Substring(0,240)+"…";}
                 text.AppendLine("["+label+"] "+message);
             }
@@ -1083,31 +1530,285 @@ namespace OverFieldLocal
             logPanel.Controls.Add(logs); logPanel.Controls.Add(logHead); layout.Controls.Add(logPanel, 0, 6);
             footer.Text = Loc.S("可随时退出 · 游戏与服务独立运行 · 两种模式的存档分开保存"); footer.ForeColor = Theme.Muted; footer.Font = Theme.Font(8.5f); footer.Dock = DockStyle.Fill; footer.TextAlign = ContentAlignment.BottomLeft; layout.Controls.Add(footer, 0, 7);
         }
+        async Task InitializeLanguageFromIpAsync()
+        {
+            try
+            {
+                string country = await Task.Run(() => FetchIpCountryCode(backend.LifetimeToken));
+                if (closing || IsDisposed || userSelectedLanguage || backend.HasSavedLanguage) return;
+                if (String.IsNullOrEmpty(Loc.ParseGeoCountryCode(country))) return;
+                string resolved = Loc.LocaleFromCountryCode(country);
+                backend.HasSavedLanguage = true;
+                backend.LanguageSource = "ip";
+                backend.Language = resolved;
+                if (!String.Equals(Loc.CurrentLocale, resolved, StringComparison.OrdinalIgnoreCase))
+                {
+                    Loc.SetLocale(resolved);
+                    updatingUiControls = true;
+                    try
+                    {
+                        if (languageBox != null) languageBox.SelectedIndex = Loc.LocaleIndex(resolved);
+                    }
+                    finally { updatingUiControls = false; }
+                    RefreshLocalization();
+                }
+                try { backend.Save(); } catch { }
+                Append(Loc.S("已根据网络区域初始化语言：") + Loc.LocaleDisplayNames[Loc.LocaleIndex(resolved)]);
+            }
+            catch { }
+        }
+        static string FetchIpCountryCode(CancellationToken cancellation)
+        {
+            try { ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072; } catch { }
+            foreach (string endpoint in new[] { "https://ipinfo.io/country", "https://api.country.is/" })
+            {
+                if (cancellation.IsCancellationRequested) return "";
+                try
+                {
+                    var request = (HttpWebRequest)WebRequest.Create(endpoint);
+                    request.Method = "GET";
+                    request.UserAgent = "OverFieldLauncher";
+                    request.Timeout = 2000;
+                    request.ReadWriteTimeout = 2000;
+                    request.AllowAutoRedirect = false;
+                    using (cancellation.Register(delegate { try { request.Abort(); } catch { } }))
+                    using (var response = (HttpWebResponse)request.GetResponse())
+                    {
+                        if ((int)response.StatusCode != 200) continue;
+                        using (var stream = response.GetResponseStream())
+                        using (var reader = new StreamReader(stream, Encoding.UTF8))
+                        {
+                            char[] buffer = new char[512];
+                            int count = reader.ReadBlock(buffer, 0, buffer.Length);
+                            string code = Loc.ParseGeoCountryCode(new string(buffer, 0, count));
+                            if (!String.IsNullOrEmpty(code)) return code;
+                        }
+                    }
+                }
+                catch { }
+            }
+            return "";
+        }
         async Task RefreshCaptureProgress()
         {
             if(checkingCaptureProgress || closing || uiPreview) return;
             checkingCaptureProgress=true;
             try {
+                Dictionary<string, object> fastData = null;
+                string nextSourceKey = lastCaptureProgressSourceKey;
+                bool waiting = false, unchanged = false;
+                bool handled = backend.TryReadCaptureProgressDirect(lastCaptureProgressSourceKey, out fastData, out nextSourceKey, out waiting, out unchanged);
+                if (handled)
+                {
+                    lastCaptureProgressSourceKey = nextSourceKey;
+                    if (unchanged || waiting || fastData == null) return;
+                    RenderCaptureProgress(fastData);
+                    return;
+                }
+                string statePath = Path.Combine(backend.BaseDir, "runtime", "capture-state.json");
+                if (!File.Exists(statePath) && lastCaptureProgressData != null && !captureRunning && !captureStartInFlight) return;
                 var data=await Task.Run(() => backend.Official("progress"));
                 if(closing) return;
                 RenderCaptureProgress(data);
             } catch(Exception error) { if(!closing) captureProgressHint.Text=Loc.S("项目状态暂不可读：")+Friendly.Describe(error,"采集进度"); }
             finally { checkingCaptureProgress=false; UpdateDynamicAccessibility(); }
         }
+        void PopulateInitialChecklistRows()
+        {
+            if (captureChecklist == null) return;
+            captureChecklist.Items.Clear();
+            foreach (string label in new[]{
+                "登录基础信息", "UID、等级与任务主数据", "角色与外观", "背包物品", "武器", "护甲",
+                "装备海报", "宠物列表", "家园与家具", "邮件列表", "卡池信息", "抽卡记录",
+                "成就", "图鉴", "探索与收集", "好友列表", "档案与生活技能", "钓鱼与图鉴", "采集与图鉴"})
+            {
+                var row = new ListViewItem(Loc.S(label));
+                row.Tag = new[] { label, "等待核对", "" };
+                row.SubItems.Add(Loc.S("等待核对"));
+                row.SubItems.Add("0");
+                row.SubItems.Add("");
+                captureChecklist.Items.Add(row);
+            }
+        }
+        void PopulateChannelComboBoxes()
+        {
+            updatingUiControls = true;
+            try
+            {
+                string[] labels = { Loc.S("自动识别（全区服通用）"), Loc.S("B服（Bilibili）"), Loc.S("TapTap 服"), Loc.S("Steam 服") };
+                if (worldChannelBox != null)
+                {
+                    worldChannelBox.Items.Clear();
+                    foreach (string label in labels) worldChannelBox.Items.Add(label);
+                    int idx = Array.IndexOf(Backend.KnownChannels, Backend.NormalizeChannel(backend.Channel));
+                    worldChannelBox.SelectedIndex = idx >= 0 ? idx : 0;
+                }
+                if (captureChannelBox != null)
+                {
+                    captureChannelBox.Items.Clear();
+                    foreach (string label in labels) captureChannelBox.Items.Add(label);
+                    int idx = Array.IndexOf(Backend.KnownChannels, Backend.NormalizeChannel(backend.CaptureChannel));
+                    captureChannelBox.SelectedIndex = idx >= 0 ? idx : 0;
+                }
+            }
+            finally { updatingUiControls = false; }
+        }
+        void UpdateChannelBadge()
+        {
+            if (channelStatusLabel == null) return;
+            if (String.IsNullOrWhiteSpace(backend.Root))
+            {
+                channelStatusLabel.Text = Loc.S("尚未配置客户端目录");
+                channelStatusLabel.ForeColor = Theme.Muted;
+                return;
+            }
+            string clientExe = Backend.FindClient(backend.Root);
+            string detected = Backend.DetectChannel(clientExe);
+            if (detected == "bilibili") { channelStatusLabel.Text = Loc.S("已识别：Bilibili（PCGameSDK）"); channelStatusLabel.ForeColor = Theme.Accent; }
+            else if (detected == "taptap") { channelStatusLabel.Text = Loc.S("已识别：TapTap（QuickSDK PC）"); channelStatusLabel.ForeColor = Theme.Accent; }
+            else if (detected == "steam") { channelStatusLabel.Text = Loc.S("已识别：Steam（QuickSDK Overseas）"); channelStatusLabel.ForeColor = Theme.Accent; }
+            else { channelStatusLabel.Text = Loc.S("未在当前目录识别到有效客户端"); channelStatusLabel.ForeColor = Theme.Muted; }
+        }
+        async Task DetectSteamClientAsync(bool forCapture)
+        {
+            if (busy || (forCapture && captureRunning) || closing || uiPreview) return;
+            SetBusy(true, Loc.S("正在检查游戏目录"));
+            try
+            {
+                var info = await Task.Run(() => backend.Official("discover"));
+                if (closing) return;
+                var clients = info != null && info.ContainsKey("clients") ? info["clients"] as Dictionary<string, object> : null;
+                var steam = clients != null && clients.ContainsKey("steam") ? clients["steam"] as Dictionary<string, object> : null;
+                string exePath = steam != null && steam.ContainsKey("path") ? Convert.ToString(steam["path"]) : "";
+                string dirPath = steam != null && steam.ContainsKey("dir") ? Convert.ToString(steam["dir"]) : "";
+                if (String.IsNullOrWhiteSpace(exePath) || !File.Exists(exePath))
+                {
+                    string missing = Loc.S("未在本机 Steam 库中检测到《开放空间》(App 3879660)，请点击右侧按钮手动选择客户端目录或快捷方式。");
+                    Append(missing);
+                    MessageBox.Show(this, missing, Loc.S("查找 Steam"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+                if (forCapture)
+                {
+                    backend.SteamOfficialPath = exePath;
+                    backend.OfficialLauncherPath = exePath;
+                    backend.CaptureChannel = "steam";
+                    backend.Save();
+                    if (officialLauncherPath != null) officialLauncherPath.Text = exePath;
+                    PopulateChannelComboBoxes();
+                    Append(Loc.S("已找到 Steam 客户端：") + exePath);
+                }
+                else
+                {
+                    string selectedDir = !String.IsNullOrWhiteSpace(dirPath) ? dirPath : Path.GetDirectoryName(exePath);
+                    backend.ValidateRoot(selectedDir);
+                    backend.SteamRoot = selectedDir;
+                    backend.Root = selectedDir;
+                    backend.Channel = "steam";
+                    backend.Save();
+                    rootPath.Text = selectedDir;
+                    PopulateChannelComboBoxes();
+                    UpdateChannelBadge();
+                    Append(Loc.S("已找到 Steam 客户端：") + selectedDir);
+                }
+            }
+            catch (Exception error) { ReportError("查找 Steam", error, forCapture); }
+            finally { SetBusy(false, ""); }
+            if (!forCapture && !closing) await RefreshStatus();
+        }
+        void RefreshLocalization()
+        {
+            Text = Loc.S("开放空间 · 本地启动器");
+            if (sideTitleLabel != null) sideTitleLabel.Text = Loc.S("开放空间");
+            if (sideLangLabel != null) sideLangLabel.Text = Loc.S("语言");
+            if (sideSectionLabel != null) sideSectionLabel.Text = Loc.S("选择你的世界");
+            if (soloMode != null) soloMode.Text = Loc.S("单机模式");
+            if (steamMode != null) steamMode.Text = Loc.S("国际服");
+            if (hostMode != null) hostMode.Text = Loc.S("局域网服务");
+            if (captureMode != null) captureMode.Text = Loc.S("公服采集");
+            if (roomsButton != null) roomsButton.Text = Loc.S("房间与玩家");
+            if (soloDescLabel != null) soloDescLabel.Text = Loc.S("存档 A · 全区服可用");
+            if (steamDescLabel != null) steamDescLabel.Text = Loc.S("存档 B · 全区服可用");
+            if (hostDescLabel != null) hostDescLabel.Text = Loc.S("局域网联机 · 全区服可用");
+            if (captureDescLabel != null) captureDescLabel.Text = Loc.S("官方采集（B服 / Tap / Steam）");
+            if (roomsDescLabel != null) roomsDescLabel.Text = Loc.S("查看在线玩家与房间");
+            if (sideFooterDescLabel != null) sideFooterDescLabel.Text = Loc.S("以自己的 UID 开始\n数据只保存在本电脑\n请勿公开私人存档");
+            if (heroBrandLabel != null) heroBrandLabel.Text = Loc.S("O V E R F I E L D  /  本 地 世 界");
+            if (headline != null) headline.Text = Loc.S("开放空间");
+            if (server != null) { server.Caption = Loc.S("服务端"); server.Invalidate(); }
+            if (gateway != null) { gateway.Caption = Loc.S("游戏网关"); gateway.Invalidate(); }
+            if (proxy != null) { proxy.Caption = Loc.S("UID 与房间网关"); proxy.Invalidate(); }
+            if (settingsTitleLabel != null) settingsTitleLabel.Text = Loc.S("启动设置");
+            if (worldChannelLabel != null) worldChannelLabel.Text = Loc.S("游戏区服");
+            if (detectWorldClient != null) detectWorldClient.Text = Loc.S("查找 Steam");
+            if (browse != null) browse.Text = Loc.S("更改目录");
+            if (addressLabel != null) addressLabel.Text = Loc.S("服务地址");
+            if (rootPath != null) rootPath.Text = String.IsNullOrWhiteSpace(backend.Root) ? Loc.S("单机模式：请选择本地客户端目录") : backend.Root;
+            if (importData != null) importData.Text = Loc.S("导入数据");
+            if (backupData != null) backupData.Text = Loc.S("备份存档");
+            if (openData != null) openData.Text = Loc.S("数据目录");
+            if (firewall != null) firewall.Text = backend.Mode == "host" && lastStatus != null && lastStatus.FirewallConfigured ? Loc.S("权限已配置") : Loc.S("局域网权限");
+            if (captureTitleLabel != null) captureTitleLabel.Text = Loc.S("公服账号采集");
+            if (captureChannelLabel != null) captureChannelLabel.Text = Loc.S("采集区服");
+            if (captureDetectBtn != null) captureDetectBtn.Text = Loc.S("查找 Steam");
+            if (capturePathDescLabel != null) capturePathDescLabel.Text = Loc.S("公服启动器路径（仅公服，与私服目录独立）");
+            if (officialLauncherPath != null) officialLauncherPath.Text = String.IsNullOrWhiteSpace(backend.OfficialLauncherPath) ? Loc.S("请选择公服启动器或未修改的原版客户端 EXE") : backend.OfficialLauncherPath;
+            if (officialBrowse != null) officialBrowse.Text = Loc.S("选择启动器");
+            if (capturePreflight != null) capturePreflight.Text = Loc.S("预检查");
+            if (captureStart != null) captureStart.Text = Loc.S("开始采集");
+            if (captureStop != null) captureStop.Text = Loc.S("结束采集");
+            if (captureSaveZip != null) captureSaveZip.Text = Loc.S("保存账号 ZIP");
+            if (captureListTitleLabel != null) captureListTitleLabel.Text = Loc.S("采集项目清单 · 1.0.12增强集成 · 实时/最终核对");
+            if (captureSteps != null) captureSteps.Text = Loc.S("1. 管理员运行，选择公服原版 EXE；不要选择私服副本\n2. 开始采集并登录，按清单打开缺少的界面并等待加载\n3. 结束后核对完整清单并另存 ZIP；入库可取消，私人数据勿公开");
+            if (captureChecklist != null && captureChecklist.Columns.Count == 4)
+            {
+                captureChecklist.Columns[0].Text = Loc.S("项目");
+                captureChecklist.Columns[1].Text = Loc.S("状态");
+                captureChecklist.Columns[2].Text = Loc.S("响应");
+                captureChecklist.Columns[3].Text = Loc.S("未采集时的操作建议");
+            }
+            if (logsTitleLabel != null) logsTitleLabel.Text = Loc.S("运行记录");
+            if (openLogsLink != null) openLogsLink.Text = Loc.S("打开日志文件夹");
+            if (footer != null) footer.Text = Loc.S("游戏与服务独立运行  ·  单机 / 联机存档分开保存");
+            PopulateChannelComboBoxes();
+            UpdateChannelBadge();
+            RefreshUpdaterLocale();
+            ApplyMode();
+            if (lastStatus != null) ApplyStatus(lastStatus);
+            else if (badge != null) badge.Text = Loc.S("正在检查");
+            if (start != null && !busy) start.Text = StartButtonText(backend.Mode, lastStatus);
+            if (stop != null && !busy) stop.Text = Loc.S("停止服务");
+            if (lastCaptureProgressData != null) RenderCaptureProgress(lastCaptureProgressData);
+            else
+            {
+                foreach (ListViewItem row in captureChecklist.Items)
+                {
+                    var raw = row.Tag as string[];
+                    if (raw != null && raw.Length == 3) { row.Text = Loc.S(raw[0]); row.SubItems[1].Text = Loc.S(raw[1]); row.SubItems[3].Text = Loc.S(raw[2]); }
+                }
+                if (captureHint != null) captureHint.Text = Loc.S("抓包就绪后会打开公服。结束采集将生成账号 ZIP，并让你选择保存位置；入库是可选操作，取消或冲突不影响已交付的 ZIP。");
+                if (captureProgressHint != null) captureProgressHint.Text = Loc.S("只有成功解码的公服响应才算已采集；快照暂不可读会显示暂时无法判断，结束后按完整数据核对。");
+            }
+            ConfigureAccessibility();
+            PerformLayout();
+        }
         void RenderCaptureProgress(Dictionary<string,object> data)
         {
+            lastCaptureProgressData = data;
             captureChecklist.BeginUpdate();
             try {
                 captureChecklist.Items.Clear();
                 if(data.ContainsKey("items")) foreach(object item in (System.Collections.IEnumerable)data["items"]) {
                     var row=item as Dictionary<string,object>;if(row==null) continue;
                     string status=Convert.ToString(row["state"]);
-                    var view=new ListViewItem(Loc.S(Convert.ToString(row["label"])));
-                    view.SubItems.Add(Loc.S(Convert.ToString(row["status"])));view.SubItems.Add(Convert.ToString(row["count"]));view.SubItems.Add(Loc.S(Convert.ToString(row["hint"])));
+                    string rawLabel=Convert.ToString(row["label"]), rawStatus=Convert.ToString(row["status"]), rawHint=Convert.ToString(row["hint"]);
+                    var view=new ListViewItem(Loc.S(rawLabel));
+                    view.Tag=new[]{rawLabel, rawStatus, rawHint};
+                    view.SubItems.Add(Loc.S(rawStatus));view.SubItems.Add(Convert.ToString(row["count"]));view.SubItems.Add(Loc.S(rawHint));
                     view.ForeColor=status=="collected"?Color.FromArgb(36,128,100):(status=="missing" || status=="partial")?Color.FromArgb(168,99,38):Theme.Muted;
                     captureChecklist.Items.Add(view);
                 }
-                string warningKey=Loc.English && data.ContainsKey("warningEn")?"warningEn":"warning";
+                string warningKey=Loc.CurrentLocale == "en" && data.ContainsKey("warningEn")?"warningEn":"warning";
                 string warning=data.ContainsKey(warningKey)?Loc.S(Convert.ToString(data[warningKey])):"";
                 string stamp=data.ContainsKey("updatedAt")?Convert.ToString(data["updatedAt"]):"";
                 object live=data.ContainsKey("livePackets")?data["livePackets"]:null;
@@ -1151,11 +1852,20 @@ namespace OverFieldLocal
             {
                 var info=await Task.Run(() => backend.Official("validate-launcher", " --launcher " + Backend.Quote(selected)));
                 if(closing) return false;
-                backend.OfficialLauncherPath=Convert.ToString(info["path"]);
-                backend.Save(); officialLauncherPath.Text=backend.OfficialLauncherPath;
+                string validatedPath = Convert.ToString(info["path"]);
+                string detectedChannel = info.ContainsKey("channel") ? Convert.ToString(info["channel"]) : "unknown";
+                backend.OfficialLauncherPath = validatedPath;
+                if (detectedChannel != "unknown")
+                {
+                    backend.SetOfficialPath(detectedChannel, validatedPath);
+                    backend.CaptureChannel = detectedChannel;
+                }
+                backend.Save(); officialLauncherPath.Text = backend.OfficialLauncherPath;
+                PopulateChannelComboBoxes();
                 if(info.ContainsKey("kind") && Convert.ToString(info["kind"])=="steam") {
                     string install=info.ContainsKey("install")?Convert.ToString(info["install"]):"";
-                    Append(Loc.S("已识别 Steam 客户端（App ")+Convert.ToString(info["appId"])+"）"+(install.Length>0?"："+install:"")+Loc.S("。采集时将通过 Steam 启动，需先登录 Steam。"));
+                    string appId=info.ContainsKey("appId")?Convert.ToString(info["appId"]):"3879660";
+                    Append(Loc.S("已识别 Steam 客户端（App ")+appId+"）"+(install.Length>0?"："+install:"")+Loc.S("。采集时将通过 Steam 启动，需先登录 Steam。"));
                 }
                 else Append(Loc.S("公服启动器路径已独立保存，私服游戏目录未改变。"));
                 return true;
@@ -1187,6 +1897,8 @@ namespace OverFieldLocal
             lastCaptureIncomplete=CaptureIncompleteWarning(state).Length>0;
             captureSaveZip.Enabled=!busy && !captureRunning && File.Exists(lastCaptureZip);
             officialBrowse.Enabled=!busy && !captureRunning;
+            if(captureChannelBox!=null) captureChannelBox.Enabled=!busy && !captureRunning;
+            if(captureDetectBtn!=null) captureDetectBtn.Enabled=!busy && !captureRunning;
             capturePreflight.Enabled=!busy && !captureRunning;
             captureStart.Enabled=!busy && !captureRunning;
             captureStop.Enabled=!busy && captureRunning;
@@ -1209,9 +1921,9 @@ namespace OverFieldLocal
         {
             soloMode.Primary=backend.Mode=="solo"; steamMode.Primary=backend.Mode=="steam"; hostMode.Primary=backend.Mode=="host";
             soloMode.Invalidate(); steamMode.Invalidate(); hostMode.Invalidate();
-            if(backend.Mode=="host") subtitle.Text=Loc.S("局域网服务端 · 按 UID 管理 · 独立联机存档");
-            else if(backend.Mode=="steam") subtitle.Text=Loc.S("国际服单机 · Steam 客户端 · 英文界面 · 独立数据目录");
-            else subtitle.Text=Loc.S("国服单机 · 官方中文客户端 · 独立数据目录");
+            if(backend.Mode=="host") subtitle.Text=Loc.S("局域网服务端 · 按 UID 管理 · 支持 B服 / TapTap / Steam");
+            else if(backend.Mode=="steam") subtitle.Text=Loc.S("独立存档 B · 支持 B服 / TapTap / Steam · 独立数据目录");
+            else subtitle.Text=Loc.S("单机存档 A · 支持 B服 / TapTap / Steam · 独立数据目录");
             profileLabel.Text=Loc.S("独立数据目录  ·  ")+backend.ProfilePath;
             hostBox.Items.Clear();
             if(backend.Mode!="host") { hostBox.Items.Add(Loc.S("127.0.0.1（仅本机）")); hostBox.SelectedIndex=0; }
@@ -1271,7 +1983,53 @@ namespace OverFieldLocal
             if(closing) return;
             await RefreshStatus();
         }
+        static string FormatSectionList(object rawList)
+        {
+            var names = new List<string>();
+            var list = rawList as System.Collections.IEnumerable;
+            if (list != null && !(rawList is string))
+            {
+                foreach (object entry in list)
+                {
+                    string key = Convert.ToString(entry);
+                    string label = key == "characters" ? "角色" : key == "bag" ? "背包" : key == "weapons" ? "武器" : key == "armor" ? "护甲" : key == "posters" ? "海报" : key == "outfits" ? "外观" : key == "garden" ? "家园" : key == "exploration" ? "探索" : key;
+                    names.Add(Loc.S(label));
+                }
+            }
+            return names.Count > 0 ? String.Join(" / ", names.ToArray()) : Loc.S("无");
+        }
+        uint PromptImportUid(uint fallbackUid)
+        {
+            using (var dlg = new Form())
+            using (var prompt = new Label())
+            using (var box = new NumericUpDown())
+            using (var ok = new ActionButton(Loc.S("确定"), true))
+            using (var cancel = new ActionButton(Loc.S("取消")))
+            {
+                dlg.Text = Loc.S("指定导入 UID");
+                dlg.FormBorderStyle = FormBorderStyle.FixedDialog;
+                dlg.StartPosition = FormStartPosition.CenterParent;
+                dlg.MaximizeBox = false; dlg.MinimizeBox = false;
+                dlg.ClientSize = new Size(380, 170);
+                dlg.BackColor = Theme.Bg; dlg.ForeColor = Theme.Text;
+                prompt.Text = Loc.S("该资源包中未包含玩家 UID（可为家园/部分数据包），请输入目标本地 UID：");
+                prompt.SetBounds(20, 18, 340, 44);
+                box.SetBounds(20, 68, 340, 28);
+                box.Minimum = 1; box.Maximum = UInt32.MaxValue;
+                box.Value = fallbackUid > 0 ? fallbackUid : 1000000;
+                ok.SetBounds(160, 114, 96, 36);
+                cancel.SetBounds(264, 114, 96, 36);
+                ok.DialogResult = DialogResult.OK; cancel.DialogResult = DialogResult.Cancel;
+                dlg.AcceptButton = ok; dlg.CancelButton = cancel;
+                dlg.Controls.AddRange(new Control[] { prompt, box, ok, cancel });
+                return dlg.ShowDialog(this) == DialogResult.OK ? (uint)box.Value : 0;
+            }
+        }
         async Task ImportCapture()
+        {
+            await ImportCapturePath(null);
+        }
+        async Task ImportCapturePath(string preselectedPath)
         {
             if(busy || closing) return;
             string blocked=PrivateOperationBlockReason();
@@ -1284,12 +2042,33 @@ namespace OverFieldLocal
                 if(!StatusMatchesMode(backend.Mode,current)) throw new InvalidOperationException(Loc.S("服务状态与当前模式不一致，已取消导入。"));
                 lastStatus=current;
                 if(current.ClientRunning) { Append(Loc.S("请先退出游戏，再导入角色数据。")); return; }
-                string path;
-                using(var dialog=new OpenFileDialog { Title=Loc.S("选择账号备份或解码抓包 ZIP"),Filter=Loc.S("账号备份 / 解码抓包 ZIP|*.zip"),CheckFileExists=true })
-                { if(dialog.ShowDialog(this)!=DialogResult.OK) return; path=dialog.FileName; }
-                var info=await Task.Run(()=>backend.Capture("inspect",path,0,false)); if(closing) return;
-                uint uid=Convert.ToUInt32(info["uid"]);
-                string message="UID "+uid+" · "+info["name"]+Loc.S("\n等级 ")+info["level"]+" · "+info["characters"]+Loc.S(" 个角色\n\n将导入当前模式的独立数据目录。已有数据会先备份；其他 UID 保留。\n运行中的服务会先停止，并断开在线玩家。\n角色、装备和背包会写入存档，尚未支持的模块会保留原始抓包数据。");
+                string path = preselectedPath;
+                if (String.IsNullOrWhiteSpace(path))
+                {
+                    using(var dialog=new OpenFileDialog { Title=Loc.S("一键导入：选择资源包 / 账号ZIP / JSON / lolo.db（也可直接拖入窗口）"),Filter=Loc.S("一键导入支持包 (*.zip;*.json;*.db;*.sqlite)|*.zip;*.json;*.db;*.sqlite|账号备份 / 解码抓包 ZIP|*.zip|所有文件|*.*"),CheckFileExists=true })
+                    { if(dialog.ShowDialog(this)!=DialogResult.OK) return; path=dialog.FileName; }
+                }
+                var info=await Task.Run(()=>backend.OneClickImport("plan",path,0)); if(closing) return;
+                uint uid = info.ContainsKey("uid") ? Convert.ToUInt32(info["uid"]) : 0;
+                if (uid == 0)
+                {
+                    uid = PromptImportUid(backend.Uid);
+                    if (uid == 0) return;
+                    info = await Task.Run(() => backend.OneClickImport("plan", path, uid));
+                    if (closing) return;
+                }
+                bool conflict = info.ContainsKey("conflict") && Convert.ToBoolean(info["conflict"]);
+                string verHint = info.ContainsKey("versionHint") ? Convert.ToString(info["versionHint"]) : "";
+                string presentTxt = FormatSectionList(info.ContainsKey("presentSections") ? info["presentSections"] : null);
+                string emptyTxt = FormatSectionList(info.ContainsKey("emptySections") ? info["emptySections"] : null);
+                string message="UID "+uid+" · "+(info.ContainsKey("name") ? Convert.ToString(info["name"]) : "")
+                    +(String.IsNullOrEmpty(verHint) ? "" : " ["+verHint+"]")
+                    +Loc.S("\n等级 ")+(info.ContainsKey("level") ? Convert.ToString(info["level"]) : "1")
+                    +" · "+(info.ContainsKey("characters") ? Convert.ToString(info["characters"]) : "0")+Loc.S(" 个角色")
+                    +Loc.S("\n包含模块：")+presentTxt
+                    +Loc.S("\n缺失留空：")+emptyTxt
+                    +Loc.S("\n\n将导入当前模式的独立数据目录；缺失部分自动留空，已有数据会先备份，其他 UID 保留。");
+                if (conflict) message += Loc.S("\n注意：本机已存在该 UID 的存档，继续将备份旧档后覆盖。");
                 if(MessageBox.Show(this,message,Loc.S("确认导入资料"),MessageBoxButtons.OKCancel,MessageBoxIcon.Information)!=DialogResult.OK) return;
                 if(!String.IsNullOrEmpty(current.RuntimeMode))
                 {
@@ -1298,12 +2077,12 @@ namespace OverFieldLocal
                 }
                 if(closing) return;
                 SetBusy(true,Loc.S("正在导入角色资料"));
-                var imported=await Task.Run(()=> { backend.PrepareProfile(); return backend.Capture("import",path,uid,false,true); }); if(closing) return;
+                var imported=await Task.Run(()=> { backend.PrepareProfile(); return backend.OneClickImport("import",path,uid,conflict); }); if(closing) return;
                 string database=imported.ContainsKey("database")?Convert.ToString(imported["database"]):"";
                 if(!imported.ContainsKey("uid") || Convert.ToUInt32(imported["uid"])!=uid || !File.Exists(database))
                     throw new InvalidOperationException(Loc.S("导入结果未确认写入目标存档，请查看导入报告。"));
                 backend.Uid=uid; backend.Save(); uidBox.Value=uid;
-                Append(Loc.S("已导入 UID ")+uid+Loc.S(" 的资料。原数据已有备份，其他 UID 保留。"));
+                Append((conflict ? Loc.S("已覆盖更新数据库中的 UID ") : Loc.S("已导入 UID "))+uid+Loc.S(" 的资料。原数据已有备份，其他 UID 保留。"));
                 AppendImportSummary(imported);
                 Append(Loc.S("导入报告位于数据目录 accounts\\")+uid+"\\import-report.json。");
             }
@@ -1369,14 +2148,20 @@ namespace OverFieldLocal
             openData.Enabled=!value;
             captureMode.Enabled = !value;
             officialBrowse.Enabled = !value && !captureRunning;
+            if(captureChannelBox!=null) captureChannelBox.Enabled = !value && !captureRunning;
+            if(captureDetectBtn!=null) captureDetectBtn.Enabled = !value && !captureRunning;
             capturePreflight.Enabled = !value && !captureRunning;
             captureStart.Enabled = !value && !captureRunning;
             captureStop.Enabled = !value && captureRunning;
             captureSaveZip.Enabled = !value && !captureRunning && File.Exists(lastCaptureZip);
             uidBox.Enabled=!value && (lastStatus==null || !lastStatus.ClientRunning); hostBox.Enabled=!value && backend.Mode=="host" && (lastStatus==null || String.IsNullOrEmpty(lastStatus.RuntimeMode)); firewall.Enabled=!value && backend.Mode=="host";
+            if(languageBox!=null) languageBox.Enabled=!value;
             roomsButton.Enabled=!value && !captureRunning && backend.Mode=="host" && lastStatus!=null && lastStatus.Ready;
             stop.Text = value ? (cancellable ? Loc.S("取消操作") : Loc.S("正在处理…")) : Loc.S("停止服务");
+            bool canEditClient = !value && !captureRunning && (lastStatus == null || (!lastStatus.ServerRunning && !lastStatus.ProxyRunning));
             browse.Enabled = !value && lastStatus != null && !lastStatus.ServerRunning && !lastStatus.ProxyRunning;
+            if(worldChannelBox!=null) worldChannelBox.Enabled = canEditClient;
+            if(detectWorldClient!=null) detectWorldClient.Enabled = canEditClient;
             if (value) { badge.Text = text; badge.ForeColor = Theme.Accent; start.Text = Loc.S("正在处理…"); }
             else start.Text = StartButtonText(backend.Mode,lastStatus);
             UpdateDynamicAccessibility();
@@ -1420,6 +2205,8 @@ namespace OverFieldLocal
             badge.ForeColor = status.Ready ? Theme.Accent : Theme.Muted;
             start.Text = StartButtonText(backend.Mode,status);
             browse.Enabled = !captureRunning && !status.ServerRunning && !status.ProxyRunning;
+            if(worldChannelBox!=null) worldChannelBox.Enabled = !busy && !captureRunning && !status.ServerRunning && !status.ProxyRunning;
+            if(detectWorldClient!=null) detectWorldClient.Enabled = !busy && !captureRunning && !status.ServerRunning && !status.ProxyRunning;
             uidBox.Enabled=!captureRunning && !status.ClientRunning;
             hostBox.Enabled=!captureRunning && backend.Mode=="host" && String.IsNullOrEmpty(status.RuntimeMode);
             profileLabel.Text=Loc.S("独立数据目录  ·  ")+backend.ProfilePath;
@@ -1437,6 +2224,7 @@ namespace OverFieldLocal
             string blocked=PrivateOperationBlockReason();
             if(blocked.Length>0) { Append(blocked); return; }
             operationCancellation = new CancellationTokenSource();
+            bool statusUpdated = false;
             SetBusy(true, action == "Stop" ? Loc.S("正在停止服务") : Loc.S("正在准备游戏"), true);
             Append(action == "Stop" ? Loc.S("正在停止当前模式的服务并恢复原网络路线。") : action=="Backup" ? Loc.S("正在备份独立存档…") : launch ? Loc.S("正在准备 UID ")+backend.Uid+Loc.S(" 的本地游戏，请稍候…") : Loc.S("正在启动 ")+(backend.Mode=="solo" ? Loc.S("单机") : backend.Mode=="steam" ? Loc.S("国际服") : Loc.S("局域网"))+Loc.S(" 服务，请稍候…"));
             try
@@ -1451,7 +2239,7 @@ namespace OverFieldLocal
                 var status=await Task.Run(() => backend.Status());
                 if(closing)return;
                 if(!StatusMatchesMode(mode,status) || !StatusMatchesMode(backend.Mode,status)) throw new InvalidOperationException(Loc.S("操作结果与当前模式不一致，请重新检查状态。"));
-                lastStatus=status; lastStatusError=null; ApplyStatus(status);
+                lastStatus=status; lastStatusError=null; ApplyStatus(status); statusUpdated = true;
                 string message=OperationSuccessMessage(action,launch,result,status,uid);
                 Append(message);
                 if(action=="Start" && launch && status.ClientRunning) await Task.Run(() => backend.FocusClient());
@@ -1471,7 +2259,7 @@ namespace OverFieldLocal
                 if (operationCancellation != null) { operationCancellation.Dispose(); operationCancellation = null; }
                 SetBusy(false, "");
             }
-            if (closing) return;
+            if (closing || statusUpdated) return;
             await RefreshStatus();
         }
         async void BrowseRoot(object sender, EventArgs e)
@@ -1479,7 +2267,25 @@ namespace OverFieldLocal
             if (busy || checking) return;
             using (var dialog = new FolderBrowserDialog { Description = Loc.S("选择游戏安装目录，单机启动时使用其中的 launcher.exe"), SelectedPath = backend.Root, ShowNewFolderButton = false })
                 if (dialog.ShowDialog(this) == DialogResult.OK)
-                    try { backend.ValidateRoot(dialog.SelectedPath); if (Backend.FindClient(dialog.SelectedPath) == null) throw new InvalidOperationException(Loc.S("所选目录里没有找到游戏客户端 launcher.exe。\n请选择包含 OverField Game 或 launcher.exe 的目录。")); backend.Root = dialog.SelectedPath; backend.Save(); rootPath.Text = backend.Root; Append(Loc.S("游戏目录已保存。")); await RefreshStatus(); }
+                    try
+                    {
+                        backend.ValidateRoot(dialog.SelectedPath);
+                        string foundClient = Backend.FindClient(dialog.SelectedPath);
+                        if (foundClient == null) throw new InvalidOperationException(Loc.S("所选目录里没有找到游戏客户端 launcher.exe。\n请选择包含 OverField Game 或 launcher.exe 的目录。"));
+                        string detected = Backend.DetectChannel(foundClient);
+                        backend.Root = dialog.SelectedPath;
+                        if (detected != "unknown")
+                        {
+                            backend.SetChannelRoot(detected, dialog.SelectedPath);
+                            backend.Channel = detected;
+                        }
+                        backend.Save();
+                        rootPath.Text = backend.Root;
+                        PopulateChannelComboBoxes();
+                        UpdateChannelBadge();
+                        Append(Loc.S("游戏目录已保存。"));
+                        await RefreshStatus();
+                    }
                     catch (Exception ex) { string friendly=Friendly.Describe(ex,"选择游戏目录"); Append(friendly); AppendLogDetail(ex); MessageBox.Show(this, friendly, Loc.S("目录不可用"), MessageBoxButtons.OK, MessageBoxIcon.Warning); }
         }
         async Task Verify()

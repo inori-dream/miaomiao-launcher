@@ -4,6 +4,7 @@ stream accepts an event dict callback, or a text stream receiving JSONL.
 """
 import argparse
 import hashlib
+import http.client
 import io
 import json
 import os
@@ -46,8 +47,18 @@ class _Redirect(urllib.request.HTTPRedirectHandler):
 def _transport(url, method=None):
     _allowed(url)
     req_method = method or ('HEAD' if url == WEB_LATEST_URL else 'GET')
-    return urllib.request.build_opener(_Redirect()).open(urllib.request.Request(url, method=req_method, headers={
-        'User-Agent':'OverFieldLauncher-Updater/1', 'Accept':'application/vnd.github+json' if url == LATEST_URL else 'application/octet-stream'}), timeout=TIMEOUT)
+    headers = {'User-Agent': 'OverFieldLauncher-Updater/1',
+               'Accept': 'application/vnd.github+json' if url == LATEST_URL else 'application/octet-stream'}
+    opener = urllib.request.build_opener(_Redirect())
+    for attempt in range(3):
+        try:
+            return opener.open(urllib.request.Request(url, method=req_method, headers=headers), timeout=TIMEOUT)
+        except urllib.error.HTTPError:
+            raise
+        except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException, OSError):
+            if attempt == 2:
+                raise
+            time.sleep(0.5 * (attempt + 1))
 
 
 def _guard(path):
@@ -224,12 +235,16 @@ def _discover_web_tag(fetch):
 
 
 def _discover_release(fetch):
-    """Query the GitHub Releases API, falling back to /releases/latest redirect on 403/429 rate limits."""
+    """Query the GitHub Releases API, falling back to /releases/latest redirect on 403/429 or transient API network errors."""
     try:
         release = strict_json(_fetch(LATEST_URL, MAX_MANIFEST, fetch))
     except urllib.error.HTTPError as error:
         if error.code not in (403, 429):
             raise
+        tag = _discover_web_tag(fetch)
+        selected = {name: asset_url(tag, name) for name in ('launcher-update.json', 'launcher-update.sig')}
+        return tag, None, selected
+    except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException, OSError):
         tag = _discover_web_tag(fetch)
         selected = {name: asset_url(tag, name) for name in ('launcher-update.json', 'launcher-update.sig')}
         return tag, None, selected
@@ -273,7 +288,7 @@ def check_update(root, edition, current_version, force=False, transport=None, st
             cached = strict_json(state.read_bytes())
             now = time.time()
             stamp = cached.get('checked_at', 0)
-            if isinstance(stamp, (int,float)) and 0 <= now-stamp < CACHE_SECONDS and cached.get('edition') == edition and cached.get('current_version') == current_version:
+            if isinstance(stamp, (int,float)) and 0 <= now-stamp < CACHE_SECONDS and cached.get('edition') == edition and cached.get('current_version') == current_version and cached.get('status') in ('downloaded', 'up_to_date', 'deferred'):
                 if cached.get('status') == 'downloaded':
                     # Restore a pending download only from reverified signed bytes,
                     # never from a cache-provided filesystem path.

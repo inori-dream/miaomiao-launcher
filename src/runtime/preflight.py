@@ -72,7 +72,7 @@ def check(root=None, mode='host'):
             except (ValueError, OSError) as error:
                 failures.append('Cannot verify game client files: ' + str(error))
                 channel = 'unknown'
-            if channel not in ('pcgamesdk', 'quicksdk-pc'):
+            if channel not in ('pcgamesdk', 'quicksdk-pc', 'steam-quicksdk'):
                 failures.append('Unsupported or unverified game channel.')
             for relative in ('launcher.exe', 'GameAssembly.dll', 'launcher_Data/app.info'):
                 if is_reparse_point(client / relative) or not (client / relative).is_file():
@@ -86,12 +86,16 @@ def check(root=None, mode='host'):
                     repair_version.read_version(resource_manifest)
                 except (ValueError, OSError) as error:
                     failures.append('Invalid game version manifest: ' + str(error))
-            if channel == 'quicksdk-pc' and identity is not None:
+            if channel in ('quicksdk-pc', 'steam-quicksdk') and identity is not None:
                 from taptap_private_runner import SUPPORTED_BUILDS
                 digest = identity['files'].get('GameAssembly.dll')
                 if digest not in SUPPORTED_BUILDS:
                     failures.append('Unverified GameAssembly version for the QuickSDK adapter.')
-                if importlib.util.find_spec('frida') is None:
+                try:
+                    frida_spec = importlib.util.find_spec('frida')
+                except (ModuleNotFoundError, ValueError):
+                    frida_spec = None
+                if frida_spec is None:
                     failures.append('Missing Frida 17.24.3 for the QuickSDK adapter.')
     warnings.append('Local UID login is not ownership authentication. Do not expose a personal-save host to untrusted players.')
     return {'ready':not failures,'missing':failures,'warnings':list(dict.fromkeys(warnings)),'scope':'Files/schema only; no game startup, networking, authentication or protocol compatibility test.'}

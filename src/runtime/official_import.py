@@ -32,7 +32,7 @@ from capture_zip import (  # noqa: E402
     validate_archive,
     validate_archive_contents,
 )
-from privacy_check import redact_value, safe_error  # noqa: E402
+from privacy_check import redact_result, redact_value, safe_error  # noqa: E402
 
 
 def open_account_zip(path: Path):
@@ -189,7 +189,7 @@ def main() -> int:
         else:
             result = import_account(args.file.resolve(), database, args.uid or None,
                                     args.replace, args.allow_incomplete, args.allow_overwrite)
-        print(json.dumps(redact_value(result), ensure_ascii=False))
+        print(json.dumps(redact_result(result), ensure_ascii=False))
         return 0
     except (ValueError, OSError, zipfile.BadZipFile, sqlite3.Error) as error:
         print(json.dumps({'error': safe_error(error)}, ensure_ascii=False))

@@ -52,4 +52,4 @@ python -B -X utf8 tests/run_tests.py --system-only
 
 组装后的运行目录（如 `dist/cn/`、`dist/en/`）仅在根目录保留 `OverFieldLauncher.exe`、`README.md`、`app/`、`backup-tool/`、`docs/`（用户安装后会额外存在 `profiles/`、`runtime/`、`server-kit/`、`runtime-python/` 等运行/用户目录）；内部脚本、`LocalUidSDK.dll` 及更新元数据收敛在 `app/`，兼容旧版扁平更新包结构。
 
-签名打包入口为 `build/build_update_assets.py`，支持分组后的仓库或已组装的运行目录。发布前按 [检查清单](RELEASE-CHECKLIST.md) 核对。当前准备发布版本为 v1.5.0。
+签名打包入口为 `build/build_update_assets.py`，支持分组后的仓库或已组装的运行目录。发布前按 [检查清单](RELEASE-CHECKLIST.md) 核对。当前准备发布版本为 v1.5.1。

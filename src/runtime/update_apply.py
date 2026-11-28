@@ -181,6 +181,20 @@ def _launcher_mutex(edition):
         close(handle)
 
 
+def _sanitized_powershell_env():
+    """Remove PowerShell 6/7/8/9 module folders so Windows PowerShell 5.1 stays clean."""
+    env = os.environ.copy()
+    for key in list(env.keys()):
+        if key.lower() != 'psmodulepath':
+            continue
+        entries = [part for part in env[key].split(os.pathsep) if part]
+        cleaned = [part for part in entries if not any(token in part.lower() for token in (
+            '\\powershell\\6', '\\powershell\\7', '\\powershell\\8', '\\powershell\\9',
+            '/powershell/6', '/powershell/7', '/powershell/8', '/powershell/9'))]
+        env[key] = os.pathsep.join(cleaned)
+    return env
+
+
 def _processes():
     if os.name != 'nt':
         raise RuntimeError('process inspection is only implemented on Windows')
@@ -190,6 +204,7 @@ def _processes():
                'ConvertTo-Json -Compress')
     p = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', command],
                        capture_output=True, timeout=20, encoding='utf-8', errors='replace',
+                       env=_sanitized_powershell_env(),
                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     if p.returncode:
         raise RuntimeError('process inspection failed')

@@ -6,6 +6,7 @@ param(
     [ValidateRange(1, 65535)]
     [int[]]$Ports = @(11001, 11002, 11003, 11004, 21001, 21002),
     [string[]]$ServerIps = @(),
+    [switch]$AnyTcp,
     [ValidateRange(0, 3600)]
     [int]$AutoStopSeconds = 0,
     [switch]$CleanupOnly,
@@ -162,22 +163,23 @@ try {
     }
 
     New-Item -ItemType Directory -Path $sessionPath | Out-Null
-    foreach ($port in ($Ports | Sort-Object -Unique)) {
-        Invoke-PacketMonitor @('filter', 'add', "OFBackup_$port", '-t', 'TCP', '-p', "$port") | Out-Null
-        $filtersAdded = $true
-    }
-    # Channels whose game ports are assigned at runtime (for example the Steam
-    # build) cannot be captured by port. Fall back to the server address instead,
-    # which the client does publish in its own config. A single comma-joined
-    # argument binds as one string, so split it back into addresses.
     $addresses = @($ServerIps | ForEach-Object { "$_" -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if ($AnyTcp -and $addresses.Count -eq 0) {
+        Invoke-PacketMonitor @('filter', 'add', 'OFBackup_TCP', '-t', 'TCP') | Out-Null
+        $filtersAdded = $true
+    } else {
+        foreach ($port in ($Ports | Sort-Object -Unique)) {
+            Invoke-PacketMonitor @('filter', 'add', "OFBackup_$port", '-t', 'TCP', '-p', "$port") | Out-Null
+            $filtersAdded = $true
+        }
+    }
     foreach ($address in ($addresses | Sort-Object -Unique)) {
         $label = 'OFBackup_ip_' + ($address -replace '[^0-9A-Za-z]', '_')
         Invoke-PacketMonitor @('filter', 'add', $label, '-t', 'TCP', '-i', $address) | Out-Null
         $filtersAdded = $true
     }
     if (-not $StopFlag) {
-        Invoke-PacketMonitor @('start', '--capture', '--comp', 'nics', '--pkt-size', '0', '--file-size', '1024', '--file-name', $etl) | Out-Null
+        Invoke-PacketMonitor @('start', '--capture', '--comp', 'nics', '--pkt-size', '0', '--file-size', '2048', '--file-name', $etl) | Out-Null
         $started = $true
         if ($ReadyPath) {
             $readyData = @{ ready=$true; session=$sessionPath; pid=$PID } | ConvertTo-Json -Compress
@@ -200,7 +202,7 @@ try {
         # blackouts and etl2pcap packet loss on active game streams. Live packet
         # counts still update continuously via PktMon counters.
         $segmentEtl = Join-Path $sessionPath 'segment_001.etl'
-        Invoke-PacketMonitor @('start', '--capture', '--comp', 'nics', '--pkt-size', '0', '--file-size', '1024', '--file-name', $segmentEtl) | Out-Null
+        Invoke-PacketMonitor @('start', '--capture', '--comp', 'nics', '--pkt-size', '0', '--file-size', '2048', '--file-name', $segmentEtl) | Out-Null
         $started = $true
         if ($ReadyPath) {
             $readyData = @{ ready=$true; session=$sessionPath; pid=$PID } | ConvertTo-Json -Compress

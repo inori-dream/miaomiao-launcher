@@ -176,6 +176,55 @@ class SignedDownloadTests(unittest.TestCase):
             return self.transport(url)
         self.assertEqual(updater.check_update(self.root, 'EN', '1.3.0', force=True, transport=bad_redirect)['status'], 'error')
 
+    def test_api_network_failure_falls_back_to_web_redirect_and_errors_not_cached(self):
+        import urllib.error
+        class RedirectResponse(io.BytesIO):
+            def __init__(self, final_url):
+                super().__init__(b'')
+                self._final_url = final_url
+            def geturl(self):
+                return self._final_url
+        def transient_api_down(url):
+            self.calls.append(url)
+            if url == updater.LATEST_URL:
+                raise urllib.error.URLError('connection reset')
+            if url == updater.WEB_LATEST_URL:
+                return RedirectResponse('https://github.com/' + trust.REPOSITORY + '/releases/tag/v1.4.0')
+            return self.transport(url)
+        result = updater.check_update(self.root, 'CN', '1.3.0', transport=transient_api_down)
+        self.assertEqual(result['status'], 'downloaded', result)
+        state = json.loads((self.root / 'runtime/updates/update-state.json').read_text(encoding='utf-8'))
+        state.update(status='error', message='network glitch')
+        (self.root / 'runtime/updates/update-state.json').write_text(json.dumps(state), encoding='utf-8')
+        self.calls.clear()
+        retried = updater.check_update(self.root, 'CN', '1.3.0', transport=self.transport)
+        self.assertEqual(retried['status'], 'downloaded', retried)
+        self.assertIn(updater.LATEST_URL, self.calls)
+
+    def test_transport_retries_transient_urlerror_only(self):
+        import urllib.error
+        attempts = []
+        class FakeOpener:
+            def open(self, req, timeout=None):
+                attempts.append(timeout)
+                if len(attempts) < 3:
+                    raise urllib.error.URLError('temporary timeout')
+                return io.BytesIO(b'ok')
+        with patch.object(updater.urllib.request, 'build_opener', return_value=FakeOpener()), \
+                patch.object(updater.time, 'sleep') as sleep:
+            resp = updater._transport(updater.LATEST_URL)
+            self.assertEqual(resp.read(), b'ok')
+            self.assertEqual(len(attempts), 3)
+            self.assertEqual(sleep.call_count, 2)
+        class HttpErrorOpener:
+            def open(self, req, timeout=None):
+                raise urllib.error.HTTPError(req.full_url, 404, 'not found', {}, None)
+        with patch.object(updater.urllib.request, 'build_opener', return_value=HttpErrorOpener()), \
+                patch.object(updater.time, 'sleep') as sleep:
+            with self.assertRaises(urllib.error.HTTPError):
+                updater._transport(updater.LATEST_URL)
+            sleep.assert_not_called()
+
     def test_en_selection_and_inventory_hash(self):
         result = updater.check_update(self.root,'EN','1.3.0',transport=self.transport)
         self.assertEqual(result['status'],'downloaded',result)

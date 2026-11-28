@@ -52,9 +52,9 @@ static void install_routes() {
     hook_module(GetModuleHandleW(L"UnityPlayer.dll")); hook_module(GetModuleHandleW(L"GameAssembly.dll"));
 }
 static void log_call(const char* action) {
-    const char* path = std::getenv("LOLO_SDK_LOG");
-    if (!path) return;
-    FILE* file = nullptr; fopen_s(&file, path, "ab");
+    const wchar_t* path = _wgetenv(L"LOLO_SDK_LOG");
+    if (!path || !*path) return;
+    FILE* file = nullptr; _wfopen_s(&file, path, L"ab");
     if (file) { std::fprintf(file, "local-uid-sdk %s\n", action); std::fclose(file); }
 }
 static bool normalize_uid(const char* input, char* output, std::size_t size) {

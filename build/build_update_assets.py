@@ -39,7 +39,10 @@ def build(version,source,templates,out,node,signing_key):
     if any(private_path.is_relative_to(directory) for directory in (source,templates,out)):
         raise ValueError('Signing key must be outside source, templates and release assets')
     assets={};published=[]
-    new_files=['launcher_updater.py','update_apply.py','update_policy.py','update_trust.py','privacy_check.py','docs/auto-update.md']
+    required_files=['launcher_updater.py','update_apply.py','update_policy.py','update_trust.py','privacy_check.py','docs/auto-update.md']
+    runtime_dir=source/'src'/'runtime'
+    ignored_dirs={'__pycache__','tools','output'}
+    ignored_meta={'release-build.json','app/release-build.json','installation-manifest.json','app/installation-manifest.json'}
     for edition,binary in [('CN','OverFieldLauncher.exe'),('EN','OverFieldLauncher-EN.exe')]:
         core={}
         with zipfile.ZipFile(templates/('OverFieldLauncher-'+edition+'-portable.zip')) as base:
@@ -54,22 +57,37 @@ def build(version,source,templates,out,node,signing_key):
                 return 'app/'+name
             manifest_name=package_name('installation-manifest.json')
             release_build_name=package_name('release-build.json')
-            ignored_meta={'release-build.json','app/release-build.json'}
             for entry in entries:
                 name=entry.filename
-                if is_managed(name) and name not in {'installation-manifest.json','app/installation-manifest.json'}:
+                if is_managed(name) and name not in ignored_meta:
                     current=source_file(source,logical_name(name))
                     core[name]=release_content(name,current) if current.is_file() else base.read(entry)
-            for name in new_files:
+            if runtime_dir.is_dir():
+                for path in sorted(runtime_dir.rglob('*')):
+                    if not path.is_file():continue
+                    rel=path.relative_to(runtime_dir).as_posix()
+                    parts=rel.split('/')
+                    if any(part in ignored_dirs for part in parts):continue
+                    if path.name.startswith('test_') or path.name.endswith(('.pyc','.pyo')):continue
+                    dest=package_name(rel)
+                    if dest in ignored_meta:continue
+                    if is_managed(dest):core[dest]=release_content(dest,path)
+            for name in required_files:
                 dest=package_name(name)
                 if not is_managed(dest):raise ValueError('Core path not approved: '+dest)
                 core[dest]=release_content(dest,source_file(source,name))
             for path in (source/'docs').glob('*.md'):
                 name=path.relative_to(source).as_posix()
                 if is_managed(name):core[name]=release_content(name,path)
+            sdk_path=source_file(source,'LocalUidSDK.dll')
+            if sdk_path.is_file():
+                sdk_dest=package_name('LocalUidSDK.dll')
+                if is_managed(sdk_dest):core[sdk_dest]=sdk_path.read_bytes()
             core['OverFieldLauncher.exe']=source_file(source,binary).read_bytes()
             if edition=='EN':
                 core['README.md']=english_readme(version)
+            elif source_file(source,'README.md').is_file():
+                core['README.md']=release_content('README.md',source_file(source,'README.md'))
             file_records={name:{'size':len(data),'sha256':digest(data)} for name,data in core.items()}
             validate_files(file_records)
             baseline={'schemaVersion':1,'version':version,'edition':edition,'files':file_records}
@@ -83,9 +101,14 @@ def build(version,source,templates,out,node,signing_key):
             assets[edition]={'name':small.name,'url':asset_url('v'+version,small.name),'size':len(raw),'sha256':digest(raw),'files':inventory}
             portable=out/('OverFieldLauncher-'+edition+'-portable.zip')
             with zipfile.ZipFile(portable,'w',zipfile.ZIP_DEFLATED,compresslevel=6) as target:
+                portable_extra={}
+                for name in ('backup-tool/INTEGRATION.json','backup-tool/UPSTREAM-MANIFEST.sha256'):
+                    p=source_file(source,name)
+                    if p.is_file():portable_extra[name]=p.read_bytes()
                 for entry in entries:
                     name=entry.filename
-                    if name not in core and name not in ignored_meta:target.writestr(name,base.read(entry))
+                    if name not in core and name not in ignored_meta and name not in portable_extra:target.writestr(name,base.read(entry))
+                for name,data in portable_extra.items():target.writestr(name,data)
                 for name,data in core.items():target.writestr(name,data)
                 target.writestr(release_build_name,encoded({'version':version,'edition':edition,'automaticUpdates':'signed stable core-v1','protectedUserData':True}))
             for path,kind in [(portable,'portable'),(small,'update')]:

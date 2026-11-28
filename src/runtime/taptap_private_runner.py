@@ -4,9 +4,11 @@ Never attach to a running official client. Only spawn a source-fingerprinted cop
 under profiles/<mode>/client. Fail closed if instrumentation cannot install.
 """
 import argparse
+from contextlib import contextmanager
 import hashlib
 import ipaddress
 import json
+import os
 import sys
 import threading
 import time
@@ -16,6 +18,7 @@ _SELF_DIR = str(Path(__file__).resolve().parent)
 if _SELF_DIR not in sys.path:
     sys.path.insert(0, _SELF_DIR)
 
+STEAM_APP_ID = '3879660'
 SUPPORTED_GAME_ASSEMBLY = '2db98364241c95864781f77877523b9d2f728b22a91935fa30cdfb33a8b7f4ea'
 
 # The Steam build ships the same QuickSDK types the adapter hooks, so it can run
@@ -25,6 +28,7 @@ SUPPORTED_BUILDS = {
     SUPPORTED_GAME_ASSEMBLY: 'quicksdk-pc',
     '4787fc3abaf911890fd6bccae6d0f85904f7c959a5d14c55f5dc56b75fe82cab': 'steam',
 }
+QUICKSDK_CHANNELS = ('quicksdk-pc', 'steam-quicksdk')
 
 
 def validated_config(client, host, port, uid):
@@ -37,28 +41,31 @@ def validated_config(client, host, port, uid):
         raise ValueError('Adapter must run an isolated profiles/<mode>/client copy.')
     if is_reparse_point(client):
         raise ValueError('Adapter refuses a linked private-client root.')
-    if is_reparse_point(client):
-        raise ValueError('Adapter refuses a linked private-client root.')
-    if classify(client) != 'quicksdk-pc':
+    channel = classify(client)
+    if channel not in QUICKSDK_CHANNELS:
         raise ValueError('This adapter supports verified QuickSDK PC layout only.')
     address = ipaddress.IPv4Address(host)
     if not (address.is_loopback or any(address in ipaddress.IPv4Network(n)
-                                     for n in ('10.0.0.0/8','172.16.0.0/12','192.168.0.0/16'))):
+                                     for n in ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'))):
         raise ValueError('Only loopback or private LAN server addresses are permitted.')
     if isinstance(uid, bool) or not isinstance(uid, int) or not 1 <= uid <= 0xffffffff:
         raise ValueError('Invalid local UID; an integer is required.')
     if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
         raise ValueError('Invalid local port; an integer is required.')
-    assembly = client/'GameAssembly.dll'
+    assembly = client / 'GameAssembly.dll'
     if is_reparse_point(assembly):
         raise ValueError('Adapter refuses a linked GameAssembly.dll.')
     digest = hashlib.sha256(assembly.read_bytes()).hexdigest()
     if digest not in SUPPORTED_BUILDS:
         raise ValueError('Unverified GameAssembly version; refuse to apply this experimental adapter.')
-    return {'host':str(address),'port':port,'uid':uid,
-            # Only the pinned Steam build opts out of the developer error overlay.
-            # File logging and ordinary game failure/disconnection dialogs remain.
-            'quietErrorOverlay': SUPPORTED_BUILDS[digest] == 'steam'}
+    is_steam = SUPPORTED_BUILDS[digest] == 'steam' or channel == 'steam-quicksdk'
+    return {
+        'host': str(address), 'port': port, 'uid': uid,
+        'channel': channel, 'isSteam': is_steam,
+        # Only the pinned Steam build opts out of the developer error overlay.
+        # File logging and ordinary game failure/disconnection dialogs remain.
+        'quietErrorOverlay': SUPPORTED_BUILDS[digest] == 'steam',
+    }
 
 
 def _validated_cache(client):
@@ -66,7 +73,7 @@ def _validated_cache(client):
     marker = client / 'client-ready.json'
     recorded = read_ready_marker(marker)
     source = Path(recorded['source'])
-    if recorded['adapter'] != 'quicksdk-pc' or classify(source) != 'quicksdk-pc':
+    if recorded['adapter'] not in QUICKSDK_CHANNELS or classify(source) not in QUICKSDK_CHANNELS:
         raise ValueError('Private client marker does not identify a verified QuickSDK source.')
     if not cache_matches(source, marker):
         raise ValueError('Private client cache is stale, incomplete or tampered; prepare it again.')
@@ -91,8 +98,26 @@ def agent_source(config):
     return text.replace('__LOCAL_CONFIGURATION__',json.dumps(config),1)
 
 
-def run(client,host,port,uid,log_path,result_path=None,pid_path=None):
-    config=validated_config(client,host,port,uid)
+@contextmanager
+def _steam_environment(enabled):
+    """Expose Steam AppId/GameId during Steam private spawn and restore afterward."""
+    if not enabled:
+        yield
+        return
+    previous = {key: os.environ.get(key) for key in ('SteamAppId', 'SteamGameId')}
+    os.environ['SteamAppId'] = STEAM_APP_ID
+    os.environ['SteamGameId'] = STEAM_APP_ID
+    try:
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def run_with_config(client, config, log_path, result_path=None, pid_path=None):
     client=Path(client).resolve()
     profile=client.parent
     log=_private_output(log_path,profile)
@@ -114,7 +139,8 @@ def run(client,host,port,uid,log_path,result_path=None,pid_path=None):
         if event.get('event')=='adapter-ready': ready.set()
         if event.get('event')=='adapter-error':failed.append(event);done.set()
     player_log=_private_output(log.with_name('Player.log'),profile)
-    pid=device.spawn([str(executable),'-logFile',str(player_log)],cwd=str(client))
+    with _steam_environment(bool(config.get('isSteam'))):
+        pid=device.spawn([str(executable),'-logFile',str(player_log)],cwd=str(client))
     record=None
     failure=None
     try:
@@ -132,7 +158,7 @@ def run(client,host,port,uid,log_path,result_path=None,pid_path=None):
         while not ready.is_set() and not done.is_set() and time.monotonic()-start<40:done.wait(.1)
         if not ready.is_set() or failed:
             raise RuntimeError('QuickSDK adapter failed before ready; terminating private test client.')
-        result=dict(record,adapter='quicksdk-local',ready=True)
+        result=dict(record,adapter=config.get('channel') or 'quicksdk-local',ready=True)
         if result_path:
             from profile_manager import write_json
             write_json(result_path,result)
@@ -166,6 +192,11 @@ def run(client,host,port,uid,log_path,result_path=None,pid_path=None):
             error=ProcessCleanupError('QuickSDK cleanup failed: '+'; '.join(cleanup_errors),[record] if record else [])
             if failure is not None:raise error from failure
             raise error
+
+
+def run(client,host,port,uid,log_path,result_path=None,pid_path=None):
+    config=validated_config(client,host,port,uid)
+    return run_with_config(client,config,log_path,result_path,pid_path)
 
 
 if __name__=='__main__':

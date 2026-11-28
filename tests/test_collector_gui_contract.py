@@ -39,6 +39,22 @@ class GuiContract {
   File.WriteAllText(Path.Combine(inactiveRoot,"runtime","capture-state.json"),"{\"active\":false,\"phase\":\"complete\"}");
   backend.GetMethod("StopCaptureQuietly").Invoke(inactive,null);
   Need(!File.Exists(Path.Combine(inactiveRoot,"runtime","capture-stop.flag")),"Inactive capture changed");
+  var onlyPrivateMethod=form.GetMethod("OnlyPrivateWorldBlockedPreflight",BindingFlags.Static|BindingFlags.NonPublic);
+  var pwReport=new Dictionary<string,object>{{"ok",false},{"needsElevation",false},{"checks",new object[]{
+   new Dictionary<string,object>{{"id","python"},{"state","ok"}},
+   new Dictionary<string,object>{{"id","administrator"},{"state","error"}},
+   new Dictionary<string,object>{{"id","pktmon"},{"state","error"}},
+   new Dictionary<string,object>{{"id","private_world"},{"state","error"}}
+  }}};
+  Need((bool)onlyPrivateMethod.Invoke(null,new object[]{pwReport}),"Only private_world should allow auto-stop+UAC");
+  var brokenReport=new Dictionary<string,object>{{"ok",false},{"needsElevation",false},{"checks",new object[]{
+   new Dictionary<string,object>{{"id","tshark"},{"state","error"}},
+   new Dictionary<string,object>{{"id","private_world"},{"state","error"}}
+  }}};
+  Need(!(bool)onlyPrivateMethod.Invoke(null,new object[]{brokenReport}),"Broken dependency must block UAC");
+  File.WriteAllText(Path.Combine(runtime,"world-state-solo.json"),"{\"Active\":true}");
+  var activeModes=(List<string>)backend.GetMethod("ActiveWorldModes").Invoke(active,null);
+  Need(activeModes.Contains("solo"),"ActiveWorldModes must detect solo");
   Console.WriteLine("PASS");
  }
 }

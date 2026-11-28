@@ -107,14 +107,31 @@ def snapshot(source, destination):
 def locate(roots):
     """Find the client launcher and LoloServer, tolerating one extra nesting level.
 
-    Players pick different folders: the install root, the folder holding
-    'OverField Game', or the game folder itself. Accept all of them instead of
-    failing with 'Game client not found'.
+    Players pick different folders or direct launcher/Steam shortcut files:
+    accept folders, direct launcher.exe files, or steam:// .url shortcuts.
     """
     client = server = None
-    for base in roots:
-        if base is None:
+    for raw_base in roots:
+        if raw_base is None:
             continue
+        base = Path(raw_base)
+        if base.is_file():
+            suffix = base.suffix.lower()
+            if suffix == '.url':
+                try:
+                    from official_launcher import steam_app_id, steam_install_dir
+                    app_id = steam_app_id(base)
+                    if app_id:
+                        install = steam_install_dir(app_id)
+                        if install and (install / 'launcher.exe').is_file() and client is None:
+                            client = install
+                except (ValueError, OSError, ImportError):
+                    pass
+                continue
+            if suffix == '.exe':
+                if base.name.lower() == 'launcher.exe' and client is None:
+                    client = base.parent
+                base = base.parent
         try:
             candidates = [base] + [p for p in base.iterdir() if p.is_dir()]
         except OSError:
@@ -395,7 +412,7 @@ def prepare_client(root, base, mode):
     _recover_client_swap(profile)
     assert_private_destination(original, target)
     channel = classify(original)
-    if channel not in ('pcgamesdk', 'quicksdk-pc'):
+    if channel not in ('pcgamesdk', 'quicksdk-pc', 'steam-quicksdk'):
         raise ValueError('Unsupported or unverified game channel; refusing to prepare a private client.')
     source_identity = fingerprint(original)
     if any(name not in source_identity['files'] for name in CORE_FILES):
@@ -412,6 +429,36 @@ def prepare_client(root, base, mode):
     return _rebuild_client(original, target, profile, mode, channel, source_identity, replacements)
 
 
+def _create_junctions(pairs):
+    """Create one or more NTFS directory junctions without spawning a shell per link."""
+    if not pairs:
+        return
+    script = str(Path(__file__).with_name('make_junction.ps1'))
+    if len(pairs) == 1:
+        destination, source = pairs[0]
+        result = subprocess.run(
+            ['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+             script, '-Destination', str(destination), '-Source', str(source)],
+            capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        failed_source = source if result.returncode else None
+    else:
+        payload = json.dumps([{'d': str(dest), 's': str(src)} for dest, src in pairs], ensure_ascii=False)
+        env = dict(os.environ, OVERFIELD_JUNCTIONS=payload)
+        command = (
+            "$ErrorActionPreference='Stop'; "
+            "foreach ($item in ($env:OVERFIELD_JUNCTIONS | ConvertFrom-Json)) { "
+            "New-Item -ItemType Junction -Path $item.d -Target $item.s | Out-Null }"
+        )
+        result = subprocess.run(
+            ['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command],
+            capture_output=True, env=env, creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        failed_source = pairs[0][1] if result.returncode else None
+    if failed_source is not None:
+        raise OSError('Could not link immutable client assets: ' + str(failed_source))
+
+
 def _rebuild_client(original, target, profile, mode, channel, source_identity, replacements):
     from client_identity import (LINK_DIRECTORIES, cache_matches, fingerprint,
                                  is_junction, is_reparse_point, is_writable_name, make_ready_marker)
@@ -423,6 +470,7 @@ def _rebuild_client(original, target, profile, mode, channel, source_identity, r
     staging = profile / f'.client-staging-{uuid.uuid4().hex}'
     previous = None
     created = False
+    pending_junctions = []
 
     def junction(destination, source):
         source = Path(source).resolve()
@@ -432,14 +480,7 @@ def _rebuild_client(original, target, profile, mode, channel, source_identity, r
             if not is_junction(destination) or destination.resolve() != source:
                 raise OSError('Unsafe or mismatched client asset link: ' + str(destination))
             return
-        result = subprocess.run(
-            ['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
-             str(Path(__file__).with_name('make_junction.ps1')),
-             '-Destination', str(destination), '-Source', str(source)],
-            capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-        if result.returncode or not is_junction(destination) or destination.resolve() != source:
-            raise OSError('Could not link immutable client assets: ' + str(source))
+        pending_junctions.append((destination, source))
 
     try:
         staging.mkdir(parents=True)
@@ -493,19 +534,21 @@ def _rebuild_client(original, target, profile, mode, channel, source_identity, r
             elif entry.is_dir():
                 # Unknown root folders are private writable/runtime state.
                 destination.mkdir()
+        _create_junctions(pending_junctions)
+        for destination, source in pending_junctions:
+            if not is_junction(destination) or destination.resolve() != source:
+                raise OSError('Could not link immutable client assets: ' + str(source))
         if channel == 'pcgamesdk':
             _copy_file(_sdk_file(),
                        staging / 'launcher_Data/Plugins/x86_64/PCGameSDK.dll')
-        marker = staging / 'client-ready.json'
-        write_json(marker, make_ready_marker(original, staging, channel, replacements, source_identity=source_identity))
-        required = ('launcher.exe', 'GameAssembly.dll', 'launcher_Data/app.info', 'client-ready.json')
-        if any(not (staging / name).is_file() or is_reparse_point(staging / name) for name in required):
-            raise OSError('Prepared client is incomplete.')
         pre_swap_identity = fingerprint(original)
         if pre_swap_identity['identity'] != source_identity['identity']:
             raise OSError('The selected installation changed while its private copy was prepared.')
-        if not cache_matches(original, marker, replacements, source_identity=pre_swap_identity):
-            raise OSError('Prepared client files or Junction targets do not match the selected installation.')
+        marker = staging / 'client-ready.json'
+        write_json(marker, make_ready_marker(original, staging, channel, replacements, source_identity=pre_swap_identity))
+        required = ('launcher.exe', 'GameAssembly.dll', 'launcher_Data/app.info', 'client-ready.json')
+        if any(not (staging / name).is_file() or is_reparse_point(staging / name) for name in required):
+            raise OSError('Prepared client is incomplete.')
         if target.exists() or is_reparse_point(target):
             if is_reparse_point(target) or not target.is_dir():
                 raise OSError('Refusing to replace a linked or non-directory client target.')

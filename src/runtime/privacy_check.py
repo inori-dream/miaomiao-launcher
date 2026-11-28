@@ -20,7 +20,7 @@ RELEASE_ALLOWED = {
     'Launcher.cs', 'Friendly.cs', 'SeasideUI.cs', 'RoomManagerForm.cs', 'Strings.cs', 'tests/test_friendly_errors.py', 'tests/test_editions.py', 'docs/editions.md', 'launcher.manifest', 'launcher.ico',
     'build_launcher.ps1', 'tests/test_pcap_streaming.py', 'tests/test_capture_modes.py', 'tests/test_collector_preflight.py', 'tests/test_collector_integration.py', 'tests/test_collector_gui_contract.py', 'LocalUidSDK.cpp', 'sdk.def', 'build_sdk.cmd', 'build_sdk.ps1', 'build_all.bat',
     'World-Control.ps1', 'Lan-Firewall.ps1', 'profile_manager.py', 'UpdaterUI.cs', 'launcher_updater.py', 'update_apply.py', 'update_policy.py', 'update_trust.py', 'build_update_assets.py', 'release-build.json', 'tests/test_build.py', 'tests/test_signed_updater_download.py', 'tests/test_update_apply.py', 'tests/test_updater_gui_contract.py', 'docs/auto-update.md',
-    'capture_import.py', 'room_gateway.py', 'tests/test_gateway_forwarding.py', 'docs/login-empty-name.md', 'docs/channel-switch.md', 'proto_fields.json',
+    'capture_import.py', 'one_click_import.py', 'tests/test_one_click_import.py', 'room_gateway.py', 'tests/test_gateway_forwarding.py', 'docs/login-empty-name.md', 'docs/channel-switch.md', 'proto_fields.json',
     'model_schema.json', 'service_runner.py', 'make_junction.ps1',
     'repair_version.py', 'lolo_redirect.py', 'tests/test_launcher.py',
     'README.md', 'requirements.txt', '.gitignore', 'privacy_check.py',
@@ -33,6 +33,7 @@ RELEASE_ALLOWED = {
     'tests/test_client_isolation.py', 'tests/test_launcher_gui_state.py', 'tests/test_service_lifecycle.py',
     'docs/official-capture.md', 'docs/taptap-private.md', 'docs/international-error-overlay.md', 'docs/android-backup.md', 'docs/collector-1012.md',
     'client_identity.py', 'taptap_private_runner.py', 'taptap_private_agent.js', 'tests/test_taptap_private.py',
+    'tests/test_unified_channels_locales.py',
     'docs/login-and-data.md', 'docs/release-audit.md', 'docs/channel-login.md', 'preflight.py',
     'backup-tool/1_backup_account.cmd', 'backup-tool/2_backup_gardens.cmd',
     'backup-tool/3_decode_pcap.cmd', 'backup-tool/capture.ps1',
@@ -40,9 +41,10 @@ RELEASE_ALLOWED = {
     'backup-tool/README.md', 'backup-tool/requirements.txt',
     'backup-tool/THIRD-PARTY.txt', 'backup-tool/使用说明.txt',
     'backup-tool/VERSION', 'backup-tool/RELEASE-NOTES.txt', 'backup-tool/pcap_compat.py',
+    'backup-tool/normalize_capture.py',
     'backup-tool/Redirect.py', 'backup-tool/start_proxy.ps1', 'backup-tool/INTEGRATION.json',
     'backup-tool/UPSTREAM-MANIFEST.sha256',
-    'backup-tool/4_import_player.cmd', 'backup-tool/import_to_ofps.py',
+    'backup-tool/4_import_player.cmd', 'backup-tool/5_one_click_import.cmd', 'backup-tool/import_to_ofps.py',
     'backup-tool/proto_gen/cmdid.csv', 'backup-tool/proto_gen/msg_id.txt',
     'backup-tool/proto_gen/net_pb2.py',
     'backup-tool/proto_gen/Lolo-LICENSE.txt',
@@ -200,6 +202,26 @@ def redact_value(value):
     if isinstance(value, str):
         return redact_text(value)
     return value
+def _redact_preserving_local_path(value: str) -> str:
+    """Strip credentials from a verified caller/output path without masking the path itself."""
+    text = str(value)
+    text = _PRIVATE_KEY_BLOCK.sub('[REDACTED_PRIVATE_KEY]', text)
+    text = _PRIVATE_KEY.sub('[REDACTED_PRIVATE_KEY]', text)
+    text = _URL_CREDENTIALS.sub('[REDACTED_URL_CREDENTIALS]', text)
+    for pattern in (_GITHUB_TOKEN, _AWS_KEY, _JWT, _BEARER):
+        text = pattern.sub('[REDACTED]', text)
+    return _SECRET_ASSIGNMENT.sub(lambda match: match.group(1) + match.group(2) + '[REDACTED]', text)
+def redact_result(value, preserve_paths=('database', 'backup')):
+    """Redact untrusted text in CLI JSON results while preserving verified local file paths."""
+    if isinstance(value, dict):
+        preserved = set(preserve_paths or ())
+        return {
+            key: (_redact_preserving_local_path(item)
+                  if key in preserved and isinstance(item, str)
+                  else redact_value(item))
+            for key, item in value.items()
+        }
+    return redact_value(value)
 def safe_error(error: Exception) -> str:
     """Bound error size and redact paths/credentials before logging or display."""
     return redact_text(error)[:1000]

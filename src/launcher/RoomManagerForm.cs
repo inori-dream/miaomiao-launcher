@@ -44,7 +44,7 @@ namespace OverFieldLocal
         }
         void AddButton(Control parent,string text,Func<Task> callback)
         {
-            var button=new ActionButton(text) { Dock=DockStyle.None,Width=142,Height=46,Margin=new Padding(0,0,12,0),Font=Theme.Font(10,FontStyle.Bold) };
+            var button=new ActionButton(text) { Dock=DockStyle.None,Width=156,Height=46,Margin=new Padding(0,0,10,0),Font=Theme.Font(9.5f,FontStyle.Bold) };
             button.Click+=async delegate { try { await callback(); } catch(Exception e) { if(!closed)status.Text=Friendly.Describe(e,"管理房间"); } };actions.Add(button);parent.Controls.Add(button);
         }
         uint Selected(DataGridView grid)

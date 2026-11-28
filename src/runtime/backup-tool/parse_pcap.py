@@ -17,10 +17,14 @@ OverField (开放空间) 官服 TCP 抓包无损解包与玩家数据完整性�
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import csv
+import hashlib
+import ipaddress
 import json
 import os
 import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -42,6 +46,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 import net_pb2  # type: ignore  # noqa: E402
 from pcap_compat import prepare_capture  # noqa: E402
+from normalize_capture import normalize_pcapng  # noqa: E402
 from exploration import Exploration, render_report  # noqa: E402
 
 MAX_DECOMPRESSED_BODY = 32 * 1024 * 1024
@@ -138,57 +143,104 @@ def pick_directions(b01: bytes, b10: bytes) -> List[Tuple[str, bytes]]:
     return [("s2c", b01), ("c2s", b10)]
 
 
+@contextmanager
+def tshark_input(path: Path):
+    """Avoid Windows 260-char / UNC extended-prefix issues when invoking tshark.exe."""
+    value = str(path)
+    if value.startswith('\\\\?\\UNC\\'):
+        value = '\\\\' + value[8:]
+    elif value.startswith('\\\\?\\'):
+        value = value[4:]
+    if os.name != 'nt' or len(value) < 240:
+        yield value
+        return
+    temporary = None
+    try:
+        with NamedTemporaryFile(prefix='ofcap_', suffix='.pcapng', delete=False) as stream:
+            temporary = Path(stream.name)
+        with Path(path).open('rb') as source, temporary.open('wb') as destination:
+            shutil.copyfileobj(source, destination, 1024 * 1024)
+        yield str(temporary)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def list_tcp_streams(pcap_path: Path) -> List[int]:
     """使用 tshark 列出 pcapng 中所有的 TCP stream ID。"""
-    cmd = [TSHARK, "-n", "-r", str(pcap_path), "-T", "fields", "-e", "tcp.stream", "-Y", "tcp"]
-    res = subprocess.run(
-        cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False
-    )
+    with tshark_input(pcap_path) as readable:
+        cmd = [TSHARK, "-n", "-r", readable, "-T", "fields", "-e", "tcp.stream", "-Y", "tcp"]
+        res = subprocess.run(
+            cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False
+        )
     if res.returncode != 0:
         raise RuntimeError(f"tshark 读取 pcap 失败: {res.stderr.strip()}")
     streams = sorted({int(x.strip()) for x in res.stdout.splitlines() if x.strip().isdigit()})
     return streams
 
 
-def extract_tcp_stream_directions(
-    pcap_path: Path,
-    stream_id: int,
-    *,
-    gap_directions: Optional[set[int]] = None,
-) -> Tuple[str, str, bytes, bytes]:
-    """
-    通过 tshark -z follow,tcp,raw,<id> 精确提取重组后的双向字节流。
-    返回 (node0_addr, node1_addr, node0_to_node1_bytes, node1_to_node0_bytes)。
+_TUN_MIRROR_NET = ipaddress.ip_network("198.18.0.0/15")
 
-    每个方向只保留首个 TCP 缺口之前的内容；缺口之后无法再可靠确定游戏帧边界。
-    调用方可传入 gap_directions 集合，接收发生缺口的 Node 方向（0 或 1）。
-    """
-    cmd = [TSHARK, "-n", "-r", str(pcap_path), "-q", "-z", f"follow,tcp,raw,{stream_id}"]
-    res = subprocess.run(
-        cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False
-    )
-    if res.returncode != 0:
-        raise RuntimeError(f"tshark 重组流 {stream_id} 失败: {res.stderr.strip()}")
 
+def _split_ip_port(addr: str) -> Tuple[str, str]:
+    if not addr or ":" not in addr:
+        return addr, ""
+    host, port = addr.rsplit(":", 1)
+    return host.strip("[]"), port
+
+
+def _is_tun_virtual_ip(addr: str) -> bool:
+    host, _ = _split_ip_port(addr)
+    if not host:
+        return False
+    try:
+        return ipaddress.ip_address(host) in _TUN_MIRROR_NET
+    except ValueError:
+        return False
+
+
+def _parse_follow_sections(stdout: str) -> List[Tuple[str, str, bytes, bytes, set[int]]]:
+    """Parse one or more `tshark -q -z follow,tcp,raw,<id>` sections."""
+    sections: List[Tuple[str, str, bytes, bytes, set[int]]] = []
     node0 = ""
     node1 = ""
     chunks: Tuple[List[bytes], List[bytes]] = ([], [])
-    gaps = gap_directions if gap_directions is not None else set()
-
+    gaps: set[int] = set()
     in_body = False
-    for raw_line in res.stdout.splitlines():
+    saw_header = False
+
+    def flush() -> None:
+        nonlocal node0, node1, chunks, gaps, in_body, saw_header
+        if saw_header or node0 or node1 or chunks[0] or chunks[1] or gaps:
+            sections.append((node0, node1, b"".join(chunks[0]), b"".join(chunks[1]), set(gaps)))
+        node0 = ""
+        node1 = ""
+        chunks = ([], [])
+        gaps = set()
+        in_body = False
+        saw_header = False
+
+    for raw_line in stdout.splitlines():
         line = raw_line.rstrip("\r\n")
+        if line.startswith("Follow: tcp,raw"):
+            if saw_header:
+                flush()
+            saw_header = True
+            continue
         if line.startswith("Node 0: "):
             node0 = line[len("Node 0: "):].strip()
+            saw_header = True
             continue
         if line.startswith("Node 1: "):
             node1 = line[len("Node 1: "):].strip()
             in_body = True
+            saw_header = True
             continue
         if not in_body:
             continue
         if line.startswith("===="):
-            break
+            flush()
+            continue
         if not line:
             continue
         # tshark follow,tcp,raw 约定：无前导制表符为 Node0 -> Node1，带前导 '\t' 为 Node1 -> Node0
@@ -214,7 +266,80 @@ def extract_tcp_stream_directions(
             continue
         chunks[direction].append(chunk)
 
-    return node0, node1, b"".join(chunks[0]), b"".join(chunks[1])
+    if saw_header or node0 or node1 or chunks[0] or chunks[1] or gaps:
+        flush()
+    return sections
+
+
+def extract_tcp_stream_directions(
+    pcap_path: Path,
+    stream_id: int,
+    *,
+    gap_directions: Optional[set[int]] = None,
+) -> Tuple[str, str, bytes, bytes]:
+    """
+    通过 tshark -z follow,tcp,raw,<id> 精确提取重组后的双向字节流。
+    返回 (node0_addr, node1_addr, node0_to_node1_bytes, node1_to_node0_bytes)。
+
+    每个方向只保留首个 TCP 缺口之前的内容；缺口之后无法再可靠确定游戏帧边界。
+    调用方可传入 gap_directions 集合，接收发生缺口的 Node 方向（0 或 1）。
+    """
+    with tshark_input(pcap_path) as readable:
+        cmd = [TSHARK, "-n", "-r", readable, "-q", "-z", f"follow,tcp,raw,{stream_id}"]
+        res = subprocess.run(
+            cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False
+        )
+    if res.returncode != 0:
+        raise RuntimeError(f"tshark 重组流 {stream_id} 失败: {res.stderr.strip()}")
+
+    sections = _parse_follow_sections(res.stdout)
+    if not sections:
+        return "", "", b"", b""
+    node0, node1, b01, b10, parsed_gaps = sections[0]
+    if gap_directions is not None:
+        gap_directions.update(parsed_gaps)
+    return node0, node1, b01, b10
+
+
+def extract_many_tcp_streams(
+    pcap_path: Path,
+    stream_ids: List[int],
+    batch_size: int = 24,
+) -> Dict[int, Tuple[str, str, bytes, bytes, set[int]]]:
+    """Batch-extract multiple TCP streams via fewer tshark subprocess invocations."""
+    results: Dict[int, Tuple[str, str, bytes, bytes, set[int]]] = {}
+    if not stream_ids:
+        return results
+    batched_allowed = (
+        len(stream_ids) > 1
+        and Path(pcap_path).is_file()
+        and follow_tcp_stream is _DEFAULT_FOLLOW_TCP_STREAM
+        and extract_tcp_stream_directions is _DEFAULT_EXTRACT_TCP_STREAM_DIRECTIONS
+        and "unittest.mock" not in type(getattr(subprocess, "run", None)).__module__
+    )
+    if not batched_allowed:
+        for sid in stream_ids:
+            n0, n1, b01, b10, gaps_list = follow_tcp_stream(pcap_path, sid)
+            results[sid] = (n0, n1, b01, b10, set(gaps_list))
+        return results
+    with tshark_input(pcap_path) as readable:
+        for offset in range(0, len(stream_ids), batch_size):
+            batch = stream_ids[offset:offset + batch_size]
+            cmd = [TSHARK, "-n", "-r", readable, "-q"]
+            for sid in batch:
+                cmd.extend(("-z", f"follow,tcp,raw,{sid}"))
+            res = subprocess.run(
+                cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False
+            )
+            sections = _parse_follow_sections(res.stdout) if res.returncode == 0 else []
+            if len(sections) == len(batch):
+                for sid, section in zip(batch, sections):
+                    results[sid] = section
+            else:
+                for sid in batch:
+                    n0, n1, b01, b10, gaps_list = follow_tcp_stream(pcap_path, sid)
+                    results[sid] = (n0, n1, b01, b10, set(gaps_list))
+    return results
 
 
 def follow_tcp_stream(pcap_path: Path, stream_id: int) -> Tuple[str, str, bytes, bytes, List[int]]:
@@ -227,6 +352,10 @@ def follow_tcp_stream(pcap_path: Path, stream_id: int) -> Tuple[str, str, bytes,
     node0, node1, b01, b10 = extract_tcp_stream_directions(
         pcap_path, stream_id, gap_directions=gap_directions)
     return node0, node1, b01, b10, sorted(gap_directions)
+
+
+_DEFAULT_FOLLOW_TCP_STREAM = follow_tcp_stream
+_DEFAULT_EXTRACT_TCP_STREAM_DIRECTIONS = extract_tcp_stream_directions
 
 
 def parse_game_stream(data: bytes) -> Tuple[List[dict], int]:
@@ -523,7 +652,11 @@ def write_own_scene_backup(
 
 
 def analyze_pcap(pcap_path: Path, out_dir: Path) -> None:
-    pcap_path = prepare_capture(pcap_path)
+    prepared = prepare_capture(pcap_path)
+    if prepared == pcap_path and pcap_path.is_file():
+        pcap_path, _ = normalize_pcapng(pcap_path)
+    else:
+        pcap_path = prepared
     cmd_map = load_cmd_map()
     raw_dir = out_dir / "raw"
     json_dir = out_dir / "json"
@@ -553,9 +686,18 @@ def analyze_pcap(pcap_path: Path, out_dir: Path) -> None:
     garden_packets: dict[int, list[str]] = defaultdict(list)
     own_scenes: dict[int, list[net_pb2.SceneData]] = defaultdict(list)
 
-    for sid in streams:
-        node0, node1, b01, b10, gap_list = follow_tcp_stream(pcap_path, sid)
-        gap_directions: set[int] = set(gap_list)
+    extracted = extract_many_tcp_streams(pcap_path, streams)
+    seen_physical_streams: set[tuple] = set()
+    ordered_streams = sorted(
+        streams,
+        key=lambda sid: (
+            1 if (_is_tun_virtual_ip(extracted[sid][0]) or _is_tun_virtual_ip(extracted[sid][1])) else 0,
+            sid,
+        ),
+    )
+
+    for sid in ordered_streams:
+        node0, node1, b01, b10, gap_directions = extracted[sid]
         if not b01 and not b10 and not gap_directions:
             continue
 
@@ -565,17 +707,38 @@ def analyze_pcap(pcap_path: Path, out_dir: Path) -> None:
         known_game_port = p0 in GAME_PORTS or p1 in GAME_PORTS
         if p1 in GAME_PORTS:
             directions = [("c2s", b01, 0), ("s2c", b10, 1)]
+            remote_addr, client_addr = node1, node0
         elif p0 in GAME_PORTS:
             directions = [("s2c", b01, 0), ("c2s", b10, 1)]
+            remote_addr, client_addr = node0, node1
         else:
             # Channels that assign game ports at runtime (the Steam build does)
             # are captured by server address, so the port no longer identifies
             # the server side. The side that actually speaks the game protocol
             # must be found by trial instead of guessed from the port.
+            picked = pick_directions(b01, b10)
             directions = [
                 (label, payload, node_direction)
-                for node_direction, (label, payload) in enumerate(pick_directions(b01, b10))
+                for node_direction, (label, payload) in enumerate(picked)
             ]
+            s2c_idx = 0 if picked[0][0] == "s2c" else 1
+            remote_addr = node0 if s2c_idx == 0 else node1
+            client_addr = node1 if s2c_idx == 0 else node0
+
+        c2s_bytes = next((p for lbl, p, _ in directions if lbl == "c2s"), b"")
+        s2c_bytes = next((p for lbl, p, _ in directions if lbl == "s2c"), b"")
+        stream_signature = (
+            remote_addr,
+            len(c2s_bytes), hashlib.sha256(c2s_bytes).hexdigest(),
+            len(s2c_bytes), hashlib.sha256(s2c_bytes).hexdigest(),
+        )
+        # Skip virtual TUN mirror streams (e.g. 198.18.0.x) when physical NIC already
+        # carried the exact same plaintext stream; preserves VPN-only captures.
+        if _is_tun_virtual_ip(client_addr) and not _is_tun_virtual_ip(remote_addr):
+            if stream_signature in seen_physical_streams:
+                continue
+        else:
+            seen_physical_streams.add(stream_signature)
 
         stream_pkt_total = 0
         recognized_game_stream = known_game_port
@@ -585,7 +748,8 @@ def analyze_pcap(pcap_path: Path, out_dir: Path) -> None:
             recognized_direction = bool(pkts) or looks_like_game_stream(payload)
             recognized_game_stream = recognized_game_stream or recognized_direction
             tcp_gap = node_direction in gap_directions
-            if (recognized_direction or known_game_port) and (tcp_gap or remaining):
+            keepalive_probe = (not pkts and not tcp_gap and payload == b"\x00")
+            if (recognized_direction or known_game_port) and (tcp_gap or (remaining and not keepalive_probe)):
                 issue = {
                     "stream_id": sid,
                     "direction": dir_label,

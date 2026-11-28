@@ -16,7 +16,7 @@ namespace OverFieldLocal
     {
         // The Launcher FormClosing cleanup MUST be skipped when this is true.
         bool updaterHandoff;
-        Label updaterStatus;
+        Label updaterStatus, updaterHintLabel;
         LinkLabel updaterCheck, updaterPause, updaterLater;
         System.Windows.Forms.Timer updaterTimer;
         bool updaterAllowed, updaterAutomatic = true, updaterWorking, updaterInitialized;
@@ -25,22 +25,23 @@ namespace OverFieldLocal
         string updaterStage, updaterVersion;
         DateTime updaterNextCheck = DateTime.MinValue, updaterPostpone = DateTime.MinValue;
         int updaterCountdown = -1;
-        static string UText(string cn, string en) { return Loc.English ? en : cn; }
-        string UpdaterEdition { get { return Loc.English ? "EN" : "CN"; } }
+        static string UText(string cn, string en) { return Loc.T(cn, en); }
+        string UpdaterEdition { get { return Loc.DefaultEnglish ? "EN" : "CN"; } }
         string UpdaterDirectory { get { return Path.Combine(backend.BaseDir, "runtime", "updates"); } }
 
         Control BuildUpdaterStrip()
         {
             var strip = Grid(4, 2);
             strip.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            strip.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, Loc.English ? 120 : 82));
-            strip.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, Loc.English ? 114 : 76));
-            strip.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, Loc.English ? 100 : 76));
+            strip.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 146));
+            strip.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 134));
+            strip.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 108));
             strip.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
             strip.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
             updaterStatus = FitLabel(UText("自动更新 · 就绪", "Auto update · Ready"), 8.5f, Theme.Muted);
             strip.Controls.Add(updaterStatus, 0, 0); strip.SetColumnSpan(updaterStatus, 4);
-            strip.Controls.Add(FitLabel(UText("仅更新启动器；游戏与存档不变", "Launcher only; games and saves unchanged"), 8, Theme.Muted), 0, 1);
+            updaterHintLabel = FitLabel(UText("仅更新启动器；游戏与存档不变", "Launcher only; games and saves unchanged"), 8, Theme.Muted);
+            strip.Controls.Add(updaterHintLabel, 0, 1);
             updaterCheck = UpdaterLink(UText("检查更新", "Check now"));
             updaterPause = UpdaterLink(UText("暂停自动", "Pause auto"));
             updaterLater = UpdaterLink(UText("稍后更新", "Later"));
@@ -66,6 +67,16 @@ namespace OverFieldLocal
                 AutoEllipsis = true, Font = Theme.Font(8.5f), LinkColor = Theme.Muted, ActiveLinkColor = Theme.Accent, Margin = Padding.Empty };
         }
         void SetUpdaterStatus(string text) { if (!IsDisposed && updaterStatus != null) updaterStatus.Text = text; }
+        void RefreshUpdaterLocale()
+        {
+            if (updaterHintLabel != null) updaterHintLabel.Text = UText("仅更新启动器；游戏与存档不变", "Launcher only; games and saves unchanged");
+            if (updaterCheck != null) updaterCheck.Text = updaterRecoveryRequired ? UText("恢复更新", "Recover update") : UText("检查更新", "Check now");
+            if (updaterPause != null) updaterPause.Text = updaterAutomatic ? UText("暂停自动", "Pause auto") : UText("恢复自动", "Resume auto");
+            if (updaterLater != null) updaterLater.Text = UText("稍后更新", "Later");
+            if (updaterStatus != null && !updaterAllowed) updaterStatus.Text = UText("开发 / 测试模式 · 更新已禁用", "Development / test mode · Updates disabled");
+            else if (updaterStatus != null && !updaterWorking && updaterCountdown < 0 && updaterStage == null && !updaterRecoveryRequired)
+                updaterStatus.Text = updaterAutomatic ? UText("自动更新 · 就绪", "Auto update · Ready") : UText("自动更新已暂停", "Automatic updates paused");
+        }
 
         // Call once after argument parsing/BuildLayout, before showing the form.
         void InitializeUpdater(string[] args)
@@ -263,7 +274,29 @@ namespace OverFieldLocal
                 // The installed launch handshake records our parent identity before spawning apply.
                 // A raw CreateProcess(apply) followed by Close can lose that identity during Python imports.
                 var launch = await Task.Run(() => UpdaterNative.Start(backend.Python, backend.AppFile("update_apply.py"), arguments, backend.BaseDir, UpdaterDirectory, true, 15000));
-                if (UpdaterValue(launch, "status") != "launched") throw new InvalidOperationException("Update handoff was not acknowledged");
+                string launchStatus = UpdaterValue(launch, "status");
+                if (launchStatus == "busy" || launchStatus == "unknown" || launchStatus == "recovery_required") {
+                    updaterCountdown = -1; updaterPostpone = DateTime.UtcNow.AddSeconds(15);
+                    SetUpdaterStatus(recovery ? UText("更新需要恢复 · 等待空闲或状态确认", "Recovery needed · Waiting for idle / confirmed status") : UText("更新已下载 · 等待空闲或状态确认", "Downloaded · Waiting for idle / confirmed status"));
+                    return;
+                }
+                if (launchStatus == "conflict") {
+                    updaterCountdown = -1; updaterInstallRequested = false; updaterRecoveryRequested = false; updaterStage = null; updaterAutomatic = false;
+                    updaterPause.Text = UText("恢复自动", "Resume auto");
+                    SaveUpdaterSettings();
+                    updaterPostpone = DateTime.UtcNow.AddHours(6);
+                    string reason = UpdaterValue(launch, "reason");
+                    string details = UpdaterDetails(launch);
+                    if (reason == "local_changes") {
+                        SetUpdaterStatus(UText("检测到本地受管文件已修改 · 自动更新已暂停并保留修改", "Local managed files edited · Auto-update paused (edits kept)"));
+                        Append(UText("自动更新：检测到本地受管文件已修改，已暂停并保留修改：", "Auto update: local managed files edited; paused and preserved edits: ") + details);
+                    } else {
+                        SetUpdaterStatus(UText("更新基线缺失或版本不兼容 · 自动更新已暂停", "Installation baseline missing or incompatible · Auto-update paused"));
+                        Append(UText("自动更新：当前安装基线与更新包不匹配，已暂停自动更新（原版本可继续使用）。", "Auto update: installation baseline does not match update package; automatic updates paused."));
+                    }
+                    return;
+                }
+                if (launchStatus != "launched") throw new InvalidOperationException("Update handoff was not acknowledged");
                 if (UpdaterExternalActivity() || !UpdaterActionAuthorized(recovery, updaterAutomatic, updaterRecoveryRequested || updaterInstallRequested, DateTime.UtcNow, updaterPostpone)) {
                     // The waiting apply helper times out without killing us or applying while the parent lives.
                     updaterCountdown = -1; updaterPostpone = DateTime.UtcNow.AddMinutes(3); return;
@@ -276,6 +309,7 @@ namespace OverFieldLocal
         {
             if (!updaterAllowed || closing || updaterWorking || updaterHandoff || updaterRecoveryRequired || (!manual && !updaterAutomatic)) return;
             updaterWorking = true; updaterCheck.Enabled = false; updaterCountdown = -1;
+            if (manual) updaterPostpone = DateTime.MinValue;
             updaterNextCheck = DateTime.UtcNow.AddHours(6);
             SetUpdaterStatus(UText("正在后台检查并下载正式版…", "Checking / downloading stable release in background…"));
             try {
@@ -376,6 +410,20 @@ namespace OverFieldLocal
         }
         void UpdaterError(Exception e) { SetUpdaterStatus(UText("更新暂不可用 · 原版本可继续使用", "Update unavailable · Current version remains usable")); if (!closing) Append(UText("自动更新：", "Auto update: ") + Friendly.Describe(e, UText("自动更新", "Auto update"))); }
         static string UpdaterValue(Dictionary<string, object> data, string key) { return data != null && data.ContainsKey(key) ? Convert.ToString(data[key]) : ""; }
+        static string UpdaterDetails(Dictionary<string, object> data)
+        {
+            object raw;
+            if (data == null || !data.TryGetValue("details", out raw) || raw == null) return "";
+            var list = raw as System.Collections.IEnumerable;
+            if (list == null || raw is string) return Convert.ToString(raw);
+            var items = new List<string>();
+            foreach (object item in list) {
+                string text = Convert.ToString(item);
+                if (!String.IsNullOrWhiteSpace(text)) items.Add(text);
+                if (items.Count >= 6) break;
+            }
+            return String.Join(", ", items.ToArray());
+        }
         // Check every existing component, including files and dangling directory links.
         // Missing components are allowed so a safe runtime directory can be created.
         internal static bool SafeUpdaterPath(string path)
@@ -458,9 +506,12 @@ namespace OverFieldLocal
                     }
                 }
                 if (final==null) throw new InvalidDataException("No update helper result; exit="+code+"; logs: "+stderr);
-                if (code!=0 && Convert.ToString(final["status"])!="busy" && Convert.ToString(final["status"])!="unknown" && Convert.ToString(final["status"])!="recovery_required" && Convert.ToString(final["status"])!="deferred") {
+                string finalStatus = Convert.ToString(final["status"]);
+                if (code!=0 && finalStatus!="busy" && finalStatus!="unknown" && finalStatus!="recovery_required" && finalStatus!="deferred" && finalStatus!="conflict") {
                     object msgObj;
                     if (final.TryGetValue("message", out msgObj) && !String.IsNullOrWhiteSpace(Convert.ToString(msgObj)))
+                        throw new InvalidOperationException(Convert.ToString(msgObj));
+                    if (final.TryGetValue("reason", out msgObj) && !String.IsNullOrWhiteSpace(Convert.ToString(msgObj)))
                         throw new InvalidOperationException(Convert.ToString(msgObj));
                     throw new InvalidDataException("Update helper failed; exit="+code+"; logs: "+stderr);
                 }

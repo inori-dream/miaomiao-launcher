@@ -32,7 +32,7 @@ from capture_zip import (
     uint32,
     validate_archive_contents,
 )
-from privacy_check import redact_value, reject_secrets, safe_error, scan_text
+from privacy_check import redact_result, redact_value, reject_secrets, safe_error, scan_text
 
 BASE = Path(__file__).resolve().parent
 SCHEMA = json.loads((BASE / 'model_schema.json').read_text(encoding='utf-8'))
@@ -343,6 +343,26 @@ def _no_link(path: Path) -> bool:
     return path.is_symlink() or bool(getattr(path, 'is_junction', lambda: False)())
 
 
+def _publish_temp_file(temporary: Path, destination: Path) -> None:
+    """Hardlink a validated temporary file, falling back cleanly on exFAT/FAT32."""
+    try:
+        os.link(temporary, destination)
+        temporary.unlink()
+        return
+    except OSError:
+        if destination.exists():
+            raise FileExistsError(destination)
+        staged = destination.with_name(f'.{destination.name}.{uuid.uuid4().hex}.tmp')
+        try:
+            shutil.copy2(temporary, staged)
+            if destination.exists():
+                raise FileExistsError(destination)
+            os.replace(staged, destination)
+            temporary.unlink(missing_ok=True)
+        finally:
+            staged.unlink(missing_ok=True)
+
+
 def schema_database(source, target):
     """Publish an empty, validated schema while retaining migration objects."""
     source = Path(source).resolve()
@@ -423,8 +443,7 @@ def schema_database(source, target):
                     raise ValueError('SQLite user_version migration failed.')
                 if database.execute('PRAGMA application_id').fetchone()[0] != application_id:
                     raise ValueError('SQLite application_id migration failed.')
-        os.link(temporary, target)
-        temporary.unlink()
+        _publish_temp_file(temporary, target)
     except Exception:
         for suffix in ('', '-journal', '-wal', '-shm'):
             Path(str(temporary) + suffix).unlink(missing_ok=True)
@@ -1327,7 +1346,7 @@ def _snapshot_database(database: Path, backup: Path, task: Path) -> None:
             origin.backup(target)
             if target.execute('PRAGMA integrity_check').fetchall() != [('ok',)]:
                 raise ValueError('SQLite backup validation failed.')
-    os.link(temporary, backup)
+    _publish_temp_file(temporary, backup)
 
 
 def _iso_timestamp(value) -> str:
@@ -1594,7 +1613,7 @@ def main():
                             'LEFT JOIN of_game_basic b ON u.user_id=b.user_id ORDER BY u.user_id'
                         )
                     ]
-        print(json.dumps(redact_value(result), ensure_ascii=False))
+        print(json.dumps(redact_result(result), ensure_ascii=False))
         return 0
     except (ValueError, OSError, zipfile.BadZipFile, sqlite3.Error) as error:
         print(json.dumps(_public_error(error), ensure_ascii=False))

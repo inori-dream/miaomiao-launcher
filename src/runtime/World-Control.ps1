@@ -26,6 +26,11 @@ $taskExecutable = Join-Path $taskProfile 'server\Lolo.exe'
 $taskClient = Join-Path $taskProfile 'client\launcher.exe'
 function Find-Client([string]$Base) {
     if ([string]::IsNullOrWhiteSpace($Base)) { return $null }
+    if (Test-Path -LiteralPath $Base -PathType Leaf) {
+        $ext = [IO.Path]::GetExtension($Base).ToLowerInvariant()
+        if ($ext -eq '.exe') { return $Base }
+        $Base = Split-Path -Parent $Base
+    }
     foreach ($candidate in @(
         (Join-Path $Base 'launcher.exe'),
         (Join-Path $Base 'OverField Game\launcher.exe')
@@ -35,6 +40,37 @@ function Find-Client([string]$Base) {
             (Join-Path $child.FullName 'launcher.exe'),
             (Join-Path $child.FullName 'OverField Game\launcher.exe')
         )) { if (Test-Path -LiteralPath $candidate) { return $candidate } }
+    }
+    return $null
+}
+function Get-FridaPython {
+    $candidates = New-Object 'Collections.Generic.List[string]'
+    if ($taskPython) { $candidates.Add($taskPython) }
+    $bundled = Join-Path $taskInstallRoot 'runtime-python\python.exe'
+    if (Test-Path -LiteralPath $bundled -PathType Leaf) { $candidates.Add($bundled) }
+    $toolsPy = Join-Path $taskInstallRoot 'backup-tool\tools\python\python.exe'
+    if (Test-Path -LiteralPath $toolsPy -PathType Leaf) { $candidates.Add($toolsPy) }
+    $repoToolsPy = [IO.Path]::GetFullPath((Join-Path $taskInstallRoot '..\..\src\runtime\backup-tool\tools\python\python.exe'))
+    if (Test-Path -LiteralPath $repoToolsPy -PathType Leaf) { $candidates.Add($repoToolsPy) }
+    foreach ($ver in @('Python313', 'Python312', 'Python311')) {
+        $localPy = Join-Path $env:LOCALAPPDATA "Programs\Python\$ver\python.exe"
+        if (Test-Path -LiteralPath $localPy -PathType Leaf) { $candidates.Add($localPy) }
+    }
+    $cmd = Get-Command python.exe -ErrorAction SilentlyContinue
+    if ($cmd) { $candidates.Add($cmd.Source) }
+    $seen = @{}
+    foreach ($candidate in $candidates) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+        if ($candidate -imatch '\\Microsoft\\WindowsApps\\') { continue }
+        $key = $candidate.ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+        if ((Get-Item -LiteralPath $candidate).Length -lt 16384) { continue }
+        $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+        try { & $candidate -B -c 'import frida' *> $null; if ($LASTEXITCODE -eq 0) { return $candidate } }
+        catch { }
+        finally { $ErrorActionPreference = $prev }
     }
     return $null
 }
@@ -388,7 +424,7 @@ function Start-Background([string]$Executable,[string]$Directory,[string]$Name,[
     }
     return $taskOutRecord
 }
-function Wait-Ready([string]$Address,[int]$Port,$Record,[int]$Attempts=80) {
+function Wait-Ready([string]$Address,[int]$Port,$Record,[int]$Attempts=200) {
     for ($taskAttempt=0;$taskAttempt -lt $Attempts;$taskAttempt++) {
         if (-not (Process-Matches $Record)) {
             $logDir = if ($taskProfile) { Join-Path $taskProfile 'logs' } else { '' }
@@ -405,7 +441,7 @@ function Wait-Ready([string]$Address,[int]$Port,$Record,[int]$Attempts=80) {
         # Connecting is not enough: a process that raced us for the port must not
         # be mistaken for the service this task just started.
         if ((Test-Port $Address $Port) -and (Test-PortOwner $Address $Port $Record)) { return }
-        Start-Sleep -Milliseconds 250
+        Start-Sleep -Milliseconds 60
     }
     throw "Profile port $Port did not become ready or is owned by another process."
 }
@@ -634,18 +670,31 @@ function Invoke-World {
         if ($LaunchClient) {
             if (Client-Running) { Write-Output 'Client already running; kept current session.' }
             else {
-                Python-Json @('client','--root',$GameRoot,'--base',$taskBase,'--mode',$Mode) | Out-Null
+                $taskClientInfo = Python-Json @('client','--root',$GameRoot,'--base',$taskBase,'--mode',$Mode)
+                $taskAdapter = if ($taskClientInfo -and $taskClientInfo.PSObject.Properties['adapter']) { [string]$taskClientInfo.adapter } else { 'pcgamesdk' }
+                $taskRunnerPython = $taskPython
+                if ($taskAdapter -in @('quicksdk-pc', 'steam-quicksdk')) {
+                    $taskFridaPython = Get-FridaPython
+                    if (-not $taskFridaPython) { throw 'Missing Frida: QuickSDK/Steam private client requires Frida 17.24.3 in runtime-python.' }
+                    $taskRunnerPython = $taskFridaPython
+                }
                 $taskSdkLog=Join-Path $taskProfile 'logs\uid-sdk.log'
                 $taskClientArguments=@('-X','utf8',(Join-Path $taskAppRoot 'service_runner.py'),'--visible','--executable',$taskClient,'--cwd',(Split-Path -Parent $taskClient),
                     '--stdout',(Join-Path $taskProfile 'logs\client-stdout.log'),'--stderr',(Join-Path $taskProfile 'logs\client-stderr.log'),
                     '--env',"LOLO_SDK_UID=$($taskUidData.sdkUid)",'--env',"LOLO_SDK_LOG=$taskSdkLog",'--env',"LOLO_DISPATCH_HOST=$taskTarget",'--env',"LOLO_DISPATCH_PORT=$taskHttp",'--','-logFile',(Join-Path $taskProfile 'logs\Player.log'))
-                $taskClientRun = Invoke-PythonHelper $taskClientArguments
+                $taskPrev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+                try { $taskRaw = @(& $taskRunnerPython @taskClientArguments 2>&1) } finally { $ErrorActionPreference = $taskPrev }
+                $taskClientRun = [pscustomobject]@{
+                    Code = $LASTEXITCODE
+                    Out  = @($taskRaw | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | ForEach-Object { [string]$_ })
+                    Err  = @($taskRaw | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] } | ForEach-Object { $_.ToString() })
+                }
                 if ($taskClientRun.Code -ne 0) {
                     $detail = Read-ErrorDetail (@($taskClientRun.Out) + @($taskClientRun.Err)) (Join-Path $taskProfile 'logs') 'client-'
                     if ($detail) { throw "Local UID client could not launch: $detail" }
                     throw 'Local UID client could not launch.'
                 }
-                Write-Output 'Client launched with local UID SDK.'
+                Write-Output "Client launched with $taskAdapter."
             }
         }
     } catch {

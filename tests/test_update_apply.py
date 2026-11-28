@@ -641,6 +641,15 @@ class AllowlistTests(unittest.TestCase):
             self.assertFalse((f.root / 'installation-manifest.json').exists())
             self.assertEqual((f.root / 'profiles/a/save.db').read_bytes(), b'user data')
 
+    def test_sanitized_powershell_env_strips_pwsh7_modules(self):
+        with patch.dict('os.environ', {
+            'PSModulePath': r'C:\Program Files\PowerShell\7\Modules;C:\Windows\System32\WindowsPowerShell\v1.0\Modules;D:\PowerShell\6\Modules'
+        }):
+            env = apply._sanitized_powershell_env()
+            value = next(v for k, v in env.items() if k.lower() == 'psmodulepath')
+            cleaned = value.split(';')
+            self.assertEqual(cleaned, [r'C:\Windows\System32\WindowsPowerShell\v1.0\Modules'])
+
 
 if __name__ == '__main__':
     unittest.main()

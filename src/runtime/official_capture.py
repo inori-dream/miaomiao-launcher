@@ -12,6 +12,7 @@ import datetime as dt
 import json
 import importlib.util
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -50,9 +51,23 @@ def log(message: str) -> None:
 
 def write_state(payload: dict) -> None:
     RUNTIME.mkdir(parents=True, exist_ok=True)
-    temporary = STATE.with_name(STATE.name + ".tmp")
-    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    temporary.replace(STATE)
+    text = json.dumps(payload, ensure_ascii=False, indent=2)
+    temporary = STATE.with_name(f"{STATE.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(text, encoding="utf-8")
+        for attempt in range(6):
+            try:
+                temporary.replace(STATE)
+                return
+            except OSError as exc:
+                if getattr(exc, "winerror", None) not in (5, 32, 33) and not isinstance(exc, PermissionError):
+                    raise
+                if attempt < 5:
+                    time.sleep(0.02 * (attempt + 1))
+        with STATE.open("w", encoding="utf-8") as handle:
+            handle.write(text)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def read_state() -> dict:
@@ -64,6 +79,17 @@ def read_state() -> dict:
         return {}
 
 
+def _repo_dev_tools() -> list[Path]:
+    """Locate repo vendor tools when running directly from a staged dist/<edition> build."""
+    repo = BASE.parent.parent
+    if (BASE.parent.name.lower() == "dist"
+            and (repo / "src" / "runtime").is_dir()
+            and (repo / "build" / "project_layout.py").is_file()):
+        tools = repo / "src" / "runtime" / "backup-tool" / "tools"
+        return [root for root in (tools, tools / "tools") if root.is_dir()]
+    return []
+
+
 def python_exe() -> Path:
     """Pick an interpreter that can actually decode captures.
 
@@ -71,15 +97,28 @@ def python_exe() -> Path:
     protobuf, so decoding with it fails after capture. Prefer the tool's own
     interpreter, which carries the decode stack.
     """
-    candidates = (
+    candidates = [
         BASE / "backup-tool" / "tools" / "python" / "python.exe",
         BASE / "tools" / "python" / "python.exe",
         BASE / "runtime-python" / "python.exe",
-    )
+    ]
+    for tools_root in _repo_dev_tools():
+        candidates.append(tools_root / "python" / "python.exe")
+    candidates.append(Path(sys.executable))
+    which_python = shutil.which("python")
+    if which_python:
+        candidates.append(Path(which_python))
+    seen = set()
+    unique = []
     for candidate in candidates:
+        key = os.path.normcase(str(candidate))
+        if key not in seen:
+            seen.add(key)
+            unique.append(candidate)
+    for candidate in unique:
         if candidate.is_file() and can_decode(candidate):
             return candidate
-    for candidate in candidates:
+    for candidate in unique:
         if candidate.is_file():
             return candidate
     return Path(sys.executable)
@@ -98,14 +137,25 @@ def can_decode(python: Path) -> bool:
 
 
 def tshark_exe() -> Path:
-    for candidate in (
+    env_tshark = os.environ.get("OVERFIELD_TSHARK", "").strip()
+    candidates = [Path(env_tshark)] if env_tshark else []
+    candidates += [
         BASE / "backup-tool" / "tools" / "tshark" / "tshark.exe",
         BASE / "tools" / "tshark" / "tshark.exe",
-    ):
+    ]
+    for tools_root in _repo_dev_tools():
+        candidates.append(tools_root / "tshark" / "tshark.exe")
+    found = shutil.which("tshark")
+    if found:
+        candidates.append(Path(found))
+    for env_var in ("ProgramFiles", "ProgramFiles(x86)"):
+        program_dir = os.environ.get(env_var)
+        if program_dir:
+            candidates.append(Path(program_dir) / "Wireshark" / "tshark.exe")
+    for candidate in candidates:
         if candidate.is_file():
             return candidate
-    found = shutil.which("tshark")
-    return Path(found) if found else BASE / "tools" / "tshark" / "tshark.exe"
+    return BASE / "tools" / "tshark" / "tshark.exe"
 
 
 def is_admin() -> bool:
@@ -117,11 +167,27 @@ def is_admin() -> bool:
         return False
 
 
+def _sanitized_powershell_env(base_env: dict | None = None) -> dict:
+    """Strip PowerShell 7/Core module paths before spawning Windows PowerShell 5.1."""
+    source = os.environ if base_env is None else base_env
+    env = dict(source)
+    for key in list(env.keys()):
+        if key.lower() != "psmodulepath":
+            continue
+        ps_mod = env.get(key) or ""
+        kept = [
+            entry for entry in ps_mod.split(os.pathsep)
+            if entry and not re.search(r"[\\/]PowerShell[\\/][6789](?:[\\/]|$)", entry, re.I)
+        ]
+        env[key] = os.pathsep.join(kept)
+    return env
+
+
 def powershell(script: str, timeout: int = 120) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=timeout, creationflags=NO_WINDOW,
+        timeout=timeout, creationflags=NO_WINDOW, env=_sanitized_powershell_env(),
     )
 
 
@@ -228,12 +294,12 @@ def start(launcher_path=None, launcher_managed=False) -> dict:
         STOP_FLAG.touch()
         raise ValueError("启动器已退出，已保留停止信号。")
     ready_path = session / "capture-ready.json"
-    from official_launcher import steam_app_id, steam_install_dir, server_addresses
-    server_ips = []
-    if steam_app_id(launcher) is not None:
-        # The Steam build assigns game ports at runtime, so capture its server
-        # addresses instead of relying on the fixed Bilibili port list.
-        server_ips = server_addresses(steam_install_dir(steam_app_id(launcher)))
+    from official_launcher import detect_channel, resolve_client_dir, steam_app_id, server_addresses
+    app_id = steam_app_id(launcher)
+    channel_info = detect_channel(launcher)
+    client_dir = resolve_client_dir(launcher)
+    server_ips = server_addresses(client_dir)
+    is_steam = (app_id is not None) or (channel_info.get("channel") == "steam")
     command = [
         "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
         "-File", str(BASE / "backup-tool" / "capture.ps1"), "-Mode", "Account",
@@ -243,10 +309,14 @@ def start(launcher_path=None, launcher_managed=False) -> dict:
     ]
     if server_ips:
         command += ["-ServerIps", ",".join(server_ips)]
+    elif is_steam:
+        # Steam assigns ports dynamically at runtime. When no static server IP
+        # is listed in Config.txt, capture TCP dynamically and let parse_pcap match frames.
+        command += ["-AnyTcp"]
     with (session / "capture-worker.stdout.log").open("ab") as out, (session / "capture-worker.stderr.log").open("ab") as err:
         process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
                                    cwd=str(BASE / "backup-tool"), creationflags=NO_WINDOW,
-                                   env=clean_environment())
+                                   env=_sanitized_powershell_env(clean_environment()))
     state = {"active": False, "phase": "starting", "startedAt": dt.datetime.now().isoformat(timespec="seconds"),
              "session": str(session), "pid": process.pid, "officialLauncherPath": str(launcher)}
     write_state(state)
@@ -258,12 +328,14 @@ def start(launcher_path=None, launcher_managed=False) -> dict:
     except (ValueError, OSError, subprocess.SubprocessError):
         request_failed_start_stop(process, state)
         raise
+    official_kind = "steam" if (is_steam or official.kind == "steam") else official.kind
     state["officialPid"] = official.pid
-    state["officialKind"] = official.kind
+    state["officialKind"] = official_kind
+    state["officialChannel"] = channel_info.get("channel", "unknown")
     write_state(state)
-    log(f"抓包已就绪，公服启动器已打开 -> {launcher}")
+    log(f"抓包已就绪，公服启动器已打开 ({state['officialChannel']}) -> {launcher}")
     return {"session": str(session), "officialLauncherPath": str(launcher), "officialPid": official.pid,
-            "officialKind": official.kind,
+            "officialKind": official_kind, "channel": state["officialChannel"],
             "hint": "抓包已开始，公服启动器已打开。请正常登录并进入场景；若客户端已在运行，请退出后重新打开以采集登录响应。"}
 
 
@@ -509,7 +581,7 @@ def error_payload(error):
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["start", "stop", "status", "preflight", "validate-launcher", "export-zip", "recover", "progress"])
+    parser.add_argument("action", choices=["start", "stop", "status", "preflight", "validate-launcher", "discover", "export-zip", "recover", "progress"])
     parser.add_argument("--launcher", type=Path)
     parser.add_argument("--launcher-managed", action="store_true")
     parser.add_argument("--file", type=Path)
@@ -524,15 +596,23 @@ def main() -> int:
                 raise ValueError("请选择要交付的账号ZIP及保存位置。")
             from capture_zip import export_account_zip
             result = export_account_zip(args.file, args.destination)
+        elif args.action == "discover":
+            from official_launcher import discover_clients
+            result = {"clients": discover_clients()}
         elif args.action == "validate-launcher":
-            from official_launcher import validate_launcher, steam_app_id, steam_install_dir
+            from official_launcher import detect_channel, validate_launcher, steam_app_id, steam_install_dir
             path = validate_launcher(args.launcher, BASE)
             app_id = steam_app_id(path)
-            result = {"path": str(path)}
+            info = detect_channel(path)
+            result = {"path": str(path), "channel": info.get("channel", "unknown"), "identity": info.get("identity", "unknown")}
             if app_id is not None:
                 install = steam_install_dir(app_id)
                 result.update(kind="steam", appId=app_id,
                               install=str(install) if install else "")
+            elif info.get("channel") == "steam":
+                result.update(kind="steam", install=info.get("clientDir", ""))
+            else:
+                result.update(kind="exe", install=info.get("clientDir", ""))
         elif args.action == "start":
             result = start(args.launcher, launcher_managed=args.launcher_managed)
         elif args.action == "preflight":

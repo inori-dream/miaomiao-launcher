@@ -313,7 +313,7 @@ def _stop_worker(worker):
 def launch(executable, arguments, cwd, stdout_path, stderr_path, extra_env=None, visible=False, pid_path=None):
     from client_identity import classify
     executable = str(Path(executable).resolve())
-    if visible and Path(executable).name.lower() == 'launcher.exe' and classify(Path(executable).parent) == 'quicksdk-pc':
+    if visible and Path(executable).name.lower() == 'launcher.exe' and classify(Path(executable).parent) in ('quicksdk-pc', 'steam-quicksdk'):
         return launch_quicksdk(executable, cwd, stdout_path, stderr_path, extra_env or {})
     with open(stdout_path, 'ab', buffering=0) as output, open(stderr_path, 'ab', buffering=0) as error:
         process = subprocess.Popen(

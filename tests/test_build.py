@@ -593,6 +593,51 @@ class BuildScriptTests(unittest.TestCase):
                         ], capture_output=True, text=True, encoding='utf-8', check=False)
                         self.assertEqual(result.returncode, 0, f'{layout}/{edition}-{kind}: {result.stderr}')
 
+    def test_update_packages_sync_all_runtime_files_beyond_template(self):
+        import io
+        import zipfile
+        from contextlib import redirect_stdout
+        from unittest.mock import patch
+        from build import build_update_assets as builder
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, templates, output = (root / name for name in ('source', 'templates', 'output'))
+            runtime = source / 'src/runtime'
+            binaries = source / 'dist/bin'
+            runtime.mkdir(parents=True)
+            (runtime / 'backup-tool').mkdir(parents=True)
+            binaries.mkdir(parents=True)
+            templates.mkdir()
+            for name in ('capture_zip.py', 'privacy_check.py', 'launcher_updater.py',
+                         'update_apply.py', 'update_policy.py', 'update_trust.py',
+                         'one_click_import.py',
+                         'backup-tool/5_one_click_import.cmd', 'backup-tool/normalize_capture.py'):
+                dest = runtime / name
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source_file(ROOT, name), dest)
+            (source / 'docs').mkdir()
+            shutil.copyfile(source_file(ROOT, 'docs/auto-update.md'), source / 'docs/auto-update.md')
+            for edition, binary in CONFIG['artifacts'].items():
+                (binaries / binary['file']).write_bytes(b'MZ synthetic build fixture')
+                with zipfile.ZipFile(templates / f'OverFieldLauncher-{edition}-portable.zip', 'w') as archive:
+                    archive.write(runtime / 'capture_zip.py', 'app/capture_zip.py')
+                    archive.writestr('app/release-build.json', '{"version":"1.5.0"}')
+            signing_key = root / 'synthetic-key.pem'
+            signing_key.write_text('Synthetic test fixture; not a private key.', encoding='ascii')
+            with patch.object(builder.subprocess, 'run', side_effect=lambda arguments, **_: Path(arguments[-1]).write_bytes(b'sig')), \
+                    patch('update_trust.verify_manifest', return_value={'version': CONFIG['version']}), \
+                    redirect_stdout(io.StringIO()):
+                manifest = builder.build(CONFIG['version'], source, templates, output, 'synthetic-node', signing_key)
+            for edition in CONFIG['artifacts']:
+                with zipfile.ZipFile(output / f'OverFieldLauncher-{edition}-update.zip') as update_zip:
+                    names = set(update_zip.namelist())
+                    self.assertIn('app/one_click_import.py', names)
+                    self.assertIn('backup-tool/5_one_click_import.cmd', names)
+                    self.assertIn('backup-tool/normalize_capture.py', names)
+                    self.assertNotIn('app/release-build.json', names)
+                    self.assertEqual(set(manifest['assets'][edition]['files']), names)
+
     def test_stage_runtime_organizes_editions_and_backup_tool(self):
         from build.stage_runtime import stage_runtime
 
