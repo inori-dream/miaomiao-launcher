@@ -19,15 +19,20 @@ class FakePktMon {
   if(op=="status"){
    if(mode=="idle-cn")Console.Write("数据包监视器没有运行。\r\r\n");
    else if(mode=="idle-en")Console.Write("Packet Monitor is not running.\r\n");
+   else if(mode=="idle-cn-bracketed")Console.Write("[数据包监视器] 没有运行。\r\n");
+   else if(mode=="idle-en-bracketed")Console.Write("[Packet Monitor] is not running.\r\n");
+   else if(mode=="idle-tw")Console.Write("[封包監視器] 並未執行。\r\r\n");
+   else if(mode=="idle-tw-legacy")Console.Write("封包監視器 未執行。\r\n");
    else if(mode=="busy-owned" || mode=="busy-segment" || mode=="busy-missing-etl")Console.Write("正在运行\r\n日志文件: "+Environment.GetEnvironmentVariable("FAKE_ETL")+"\r\n");
    else if(mode=="busy-other")Console.Write("正在运行\r\n日志文件: C:\\OtherDiagnostic\\capture.etl\r\n");
+   else if(mode=="busy-other-tw")Console.Write("[封包監視器] 正在執行。\r\n記錄檔: C:\\OtherDiagnostic\\capture.etl\r\n");
    else Console.Write("unrecognized monitor state");
    return 0;
   }
   if(op=="filter list"){
    if(mode=="busy-owned" || mode=="busy-segment" || mode=="busy-missing-etl")Console.Write("1 OFBackup_11001 TCP 11001\r\n");
-   else if(mode=="busy-other")Console.Write("1 OtherDiagnostic TCP 11001\r\n");
-   else Console.Write(mode=="idle-en"?"none":"无");return 0;
+   else if(mode=="busy-other" || mode=="busy-other-tw")Console.Write("1 OtherDiagnostic TCP 11001\r\n");
+   else Console.Write(mode.StartsWith("idle-en")?"none":mode.StartsWith("idle-tw")?"無":"无");return 0;
   }
   return 0;
  }
@@ -47,7 +52,7 @@ if($Mode -eq 'quoted-args'){
  $path='C:\目录 with spaces\'; $tail='ends with slash\'
  $actual=Invoke-PacketMonitor @('echoargs',$path,$tail)
  if($actual -ne ($path+'|'+$tail)){throw 'Native argument quoting corrupted'}
-}elseif($Mode -in @('idle-cn','idle-en','busy-owned','busy-segment','busy-missing-etl')){
+}elseif($Mode -like 'idle-*' -or $Mode -in @('busy-owned','busy-segment','busy-missing-etl')){
  Clear-PreviousBackupCapture
 }elseif($Mode -eq 'native-error'){
  $blocked=$false
@@ -86,12 +91,21 @@ class PktMonEncodingTests(unittest.TestCase):
         self.assertEqual(ops,expected_operations)
     def test_chinese_idle_not_misclassified_as_busy(self):self.check('idle-cn',[])
     def test_english_idle_not_misclassified_as_busy(self):self.check('idle-en',[])
+    def test_traditional_chinese_reported_idle_is_not_misclassified_as_busy(self):
+        self.check('idle-tw',[])
+    def test_bracketed_monitor_labels_are_idle(self):
+        for mode in ('idle-cn-bracketed','idle-en-bracketed'):
+            with self.subTest(mode=mode):self.check(mode,[])
+    def test_unbracketed_traditional_chinese_idle_remains_supported(self):
+        self.check('idle-tw-legacy',[])
     def test_only_owned_backup_session_is_stopped(self):self.check('busy-owned',['stop','filter remove'])
     def test_owned_segment_session_is_stopped(self):
         self.check('busy-segment',['stop','filter remove'],self.etl.with_name('segment_001.etl'))
     def test_owned_session_stopped_even_if_etl_deleted(self):
         self.check('busy-missing-etl',['stop','filter remove'],self.root/'account_20200101_120000_002/capture.etl')
     def test_foreign_session_is_never_stopped(self):self.check('busy-other',[])
+    def test_foreign_traditional_chinese_session_is_never_stopped(self):
+        self.check('busy-other-tw',[])
     def test_ambiguous_state_is_never_stopped(self):self.check('ambiguous',[])
     def test_native_utf8_error_is_readable(self):self.check('native-error',[])
     def test_native_paths_with_spaces_and_trailing_slashes(self):self.check('quoted-args',[])

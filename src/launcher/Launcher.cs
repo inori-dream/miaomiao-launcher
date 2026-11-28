@@ -14,8 +14,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
 [assembly: System.Reflection.AssemblyVersion("1.1.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.6.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersion("1.6.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.6.1.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("1.6.1")]
 [assembly: System.Reflection.AssemblyTitle("开放空间私服启动器")]
 [assembly: System.Reflection.AssemblyProduct("开放空间私服启动器")]
 

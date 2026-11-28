@@ -117,8 +117,11 @@ function Remove-BackupFilters {
 
 function Clear-PreviousBackupCapture {
     $status = (Invoke-PacketMonitor @('status')) -join [Environment]::NewLine
-    $idlePattern = '(?im)^\s*(?:Packet\s+Monitor\s+is\s+not\s+running|数据包监视器\s*(?:没有|未在|未)运行|' +
-        '封包監視器\s*(?:未|未在|沒有)(?:執行|運行))[.。]?\s*$'
+    # Windows may bracket the monitor name; Traditional Chinese also uses
+    # "並未執行". Accept only explicit whole-line idle messages.
+    $idlePattern = '(?im)^\s*(?:\[?Packet\s+Monitor\]?\s+is\s+not\s+running|' +
+        '\[?数据包监视器\]?\s*(?:没有|未在|未)运行|' +
+        '\[?封包監視器\]?\s*(?:並未|未在|沒有|未)(?:執行|運行))[.。]?\s*$'
     if ($status -notmatch $idlePattern) {
         $backupLogPattern = '(?im)^[^:：\r\n]+[:：][ \t]*"?' +
             '(?<etl>(?:[a-z]:|\\\\[^\\\r\n]+\\[^\\\r\n]+)(?:\\[^\\\r\n"]+)*' +
